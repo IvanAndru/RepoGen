@@ -12,8 +12,8 @@ type: software
 license: MIT
 repository-code: "https://github.com/IvanAndru/RepoGen"
 authors:
-  - family-names: Petukhov
-    given-names: Ivan Andrushevich
+  - family-names: Andrushevich Petukhov
+    given-names: Ivan
     affiliation: King's College London
     orcid: "https://orcid.org/0009-0006-3161-607X"
 keywords:
