@@ -3,8 +3,7 @@
 Genomic-driven drug repurposing from GWAS summary statistics.
 
 RepoGen takes a genome-wide association study for a disease and asks which
-existing drugs are implicated by that genetic signal. It approaches the
-question from three independent directions, then reports where they agree.
+existing drugs are implicated by that genetic signal using several methodologies.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
@@ -92,7 +91,7 @@ repogen run --config configs/config.yaml -- --rerun-incomplete
 | `available` | A report from whichever branches have already produced results |
 | `all` (default), `full` | All three branches, then the combined report |
 
-The distinction that matters: **`all` requires all three branches to run**. If
+Important note: **`all` requires all three branches to run**. If
 you only have data for one or two, use `available` - it builds the combined
 report from whatever exists rather than failing on missing inputs. Any rule
 name from the workflow also works as a `--step`.
@@ -133,8 +132,8 @@ report/available/report.html  report from whichever branches ran
 logs/                      per-rule logs
 ```
 
-Two things that catch people out: the Mendelian randomisation directory is
-`mr/`, not `mendelian_randomisation/`; and the report is under `report/`
+The Mendelian randomisation directory is
+`mr/`, not `mendelian_randomisation/`, and the report is under `report/`
 (singular) in either a `full/` or `available/` subdirectory depending on the
 target you built.
 
@@ -157,7 +156,7 @@ back to the exact conditions that produced it.
 
 Python 3.11+, Snakemake 8+, and two external tools: MAGMA and PLINK 1.9.
 MAGMA cannot be redistributed under its licence, so `setup-resources` fetches
-it from the authors' site rather than bundling it.
+it from the authors' site.
 
 S-PrediXcan is implemented natively rather than shelled out to MetaXcan, so
 Branch B needs only the PredictDB model files.
