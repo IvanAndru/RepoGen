@@ -1131,6 +1131,10 @@ class TestCensusScriptDefaults:
     production constants, not the rejected proposals.
     """
 
+    @pytest.mark.skipif(
+        not (Path(__file__).parent.parent / "scripts").exists(),
+        reason="scripts/ is not shipped inside the image; repo checkout only",
+    )
     def test_phase0_script_imports_production_constants(self) -> None:
         """Static import parity: the script's PRODUCTION_ALL tuple must
         equal the current production constants.  Guards against future

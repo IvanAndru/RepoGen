@@ -667,6 +667,10 @@ class TestMagmaBinaryManifestContract:
         # Official VU/CNCR distribution; a change here needs a licence re-check.
         assert spec["url"].startswith("https://vu.data.surfsara.nl/")
 
+    @pytest.mark.skipif(
+        not Path("envs/repogen.yaml").exists(),
+        reason="envs/ is not shipped inside the image; repo checkout only",
+    )
     def test_conda_env_does_not_declare_magma(self) -> None:
         """`magma` on conda-forge is the wrong software - it must stay out."""
         env = yaml.safe_load(Path("envs/repogen.yaml").read_text(encoding="utf-8"))
@@ -675,6 +679,10 @@ class TestMagmaBinaryManifestContract:
                        for d in deps)
 
 
+@pytest.mark.skipif(
+    not Path("envs/repogen.linux-64.lock").exists(),
+    reason="envs/ is not shipped inside the image; repo checkout only",
+)
 class TestEnvironmentLockContract:
     """Guard the reproducible-deployment artefacts.
 

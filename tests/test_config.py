@@ -483,6 +483,10 @@ class TestClusterProfileContract:
         assert not Path("configs/cluster.yaml").exists()
 
 
+@pytest.mark.skipif(
+    not Path("envs/Dockerfile").exists(),
+    reason="deployment files are not shipped inside the image; repo checkout only",
+)
 class TestContainerImageContract:
     """Guard the deployment artefacts that travel to other people's clusters.
 
