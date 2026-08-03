@@ -1,0 +1,43 @@
+# Build context control.
+#
+# This repository holds ~94 GB of reference data and ~92 GB of results in the
+# working tree. Docker copies the entire context to the daemon before running
+# any instruction, so an exclude-everything-then-re-include policy is used:
+# forgetting one large directory would otherwise stall every build.
+
+# 1. Exclude everything.
+*
+
+# 2. Re-include only what the image needs.
+!repogen/
+!workflows/
+!profiles/
+!configs/
+!envs/
+!tests/
+!pyproject.toml
+!README.md
+!LICENSE
+
+# 3. Belt and braces: never ship data, outputs or VCS metadata even if a
+#    re-include above is later broadened.
+resources/
+results/
+logs/
+figures/
+paper_figures/
+plot_examples/
+reviews/
+.git/
+.github/
+.venv/
+.snakemake/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+**/*.pyc
+tmp_*
+_tmp_*
+*.parquet
+*.gctx
+*.gz

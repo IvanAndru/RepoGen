@@ -1,0 +1,14 @@
+# RepoGen runs on Linux (HPC, WSL, containers). Store everything with LF in the
+# repository regardless of the platform it was committed from, so a checkout on
+# Windows cannot introduce CRLF that breaks shell scripts or Snakemake rules
+# when they reach a cluster.
+* text=auto eol=lf
+
+# Never touch binary files.
+*.png binary
+*.pdf binary
+*.gz binary
+*.parquet binary
+*.gctx binary
+*.db binary
+*.xlsx binary

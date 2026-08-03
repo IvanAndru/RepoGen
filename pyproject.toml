@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repogen"
+dynamic = ["version"]
+description = "Genomic-driven drug repurposing via gene analysis, negative correlation testing, and endophenotype Mendelian randomisation"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+authors = [
+    {name = "Ivan Andrushevich Petukhov"}
+]
+keywords = [
+    "drug repurposing",
+    "GWAS",
+    "Mendelian randomisation",
+    "transcriptomics",
+    "bioinformatics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "statsmodels>=0.14",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "click>=8.0",
+    "openpyxl>=3.1",
+    "pyarrow>=14.0",
+    "mygene>=3.2",
+    "requests>=2.31",
+    "pyliftover>=0.4",
+    "tqdm>=4.66",
+    "jinja2>=3.1",
+    "rich>=13.0",
+    "adjustText>=0.8",
+    "upsetplot>=0.9",
+]
+
+[project.optional-dependencies]
+lincs = ["cmapPy>=4.0", "rapidfuzz>=3.0", "h5py>=3.10"]
+dev = ["pytest>=7.0", "flake8>=6.0", "mypy>=1.0"]
+all = ["cmapPy>=4.0", "rapidfuzz>=3.0", "h5py>=3.10", "pytest>=7.0", "flake8>=6.0", "mypy>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/IvanAndru/RepoGen"
+Repository = "https://github.com/IvanAndru/RepoGen"
+Issues = "https://github.com/IvanAndru/RepoGen/issues"
+
+[project.scripts]
+repogen = "repogen.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["repogen*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "golden: Golden fixture numerical parity tests (require pre-generated reference outputs)",
+]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0.dev0"

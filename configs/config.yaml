@@ -1,0 +1,300 @@
+# =============================================================================
+# RepoGen Pipeline Configuration - config.yaml
+# =============================================================================
+# Edit this file before running the pipeline.  All parameters can also
+# be set on the command line via Snakemake's --config flag.
+
+# ---------------------------------------------------------------------------
+# Study metadata (REQUIRED - at minimum name + gwas_input)
+# ---------------------------------------------------------------------------
+study:
+  name: "PGC3_SCZ_wave3"                          # Short identifier (used in output filenames)
+  gwas_input: "resources/gwas/PGC3_SCZ_wave3.european.autosome.public.v3.vcf.tsv.gz" # Path to raw GWAS summary statistics
+  # sample_size: 80764                     # Override if not in file
+  # n_cases: 35476                          # For case-control studies
+  # n_controls: 46839
+  genome_build: "GRCh37"                  # GRCh37 or GRCh38; manual preferred; auto-detected if omitted
+  trait_type: "case_control"              # case_control or quantitative; auto-detected
+  # population_prevalence: 0.01           # TRUE population (lifetime) disease prevalence
+                                          #   (e.g. 0.01 for schizophrenia). ONLY used for the Branch C
+                                          #   Steiger liability-scale transform. NEVER the sample case
+                                          #   fraction. Leave unset to keep Steiger observed-scale.
+
+# ---------------------------------------------------------------------------
+# GWAS preprocessing / QC
+# ---------------------------------------------------------------------------
+gwas_prep:
+  info_threshold: 0.6
+  maf_threshold: 0.01
+  # liftover_to: "GRCh37"                  # Set to perform coordinate liftover
+  remove_mhc: false
+
+# ---------------------------------------------------------------------------
+# MAGMA settings
+# ---------------------------------------------------------------------------
+magma:
+  # Leave null to resolve automatically, in order:
+  #   1. `magma` on PATH
+  #   2. <resource_dir>/bin/magma, installed by `repogen setup-resources`
+  # Set an explicit path only when using a MAGMA build kept elsewhere.
+  binary_path: null
+
+  # annotation_mode: How SNPs are assigned to genes.
+  #   "proximity"           - Standard MAGMA: SNPs within window of gene body (default, trait-agnostic)
+  #   "hmagma_fetal_brain"  - Hi-C based: fetal brain chromatin interactions (neuropsychiatric)
+  #   "hmagma_adult_brain"  - Hi-C based: adult brain chromatin interactions (neuropsychiatric)
+  #   "hmagma_ipsc_neurons" - Hi-C based: iPSC-derived neurons (neuropsychiatric)
+  #   "custom"              - User-provided annotation file (set custom_annot_file below)
+  annotation_mode: "proximity"
+  # custom_annot_file: null  # path to .genes.annot file (only for annotation_mode: "custom")
+
+  # gene_model: Statistical model for combining SNP p-values within genes.
+  #   "mean"  - SNP-wise mean (default; optimal for polygenic traits)
+  #   "multi" - Combined mean + top SNP (captures both distributed and peak signals)
+  gene_model: "mean"
+
+  # SNP-to-gene mapping window (proximity mode only, ignored for H-MAGMA/custom)
+  window_upstream_kb: 35    # kb upstream of gene body (captures promoter regions)
+  window_downstream_kb: 10  # kb downstream of gene body
+
+  exclude_mhc: true  # exclude MHC genes (chr6:25-34Mb) from FDR correction; genes kept with in_mhc flag
+  # biotype_filter: ["protein_coding"]  # uncomment to restrict to protein-coding genes
+  # memory_efficient: false
+
+# ---------------------------------------------------------------------------
+# Pathway / gene-set enrichment analysis (MAGMA competitive test)
+# ---------------------------------------------------------------------------
+pathway:
+  fdr_method: "fdr_bh"
+  fdr_threshold: 0.05
+  min_set_size: 10
+  max_set_size: 500
+  sources: null               # null = all sources; or e.g. ["GO_BP", "KEGG", "REACTOME"]
+  driver_gene_p_threshold: 0.05
+  extra_gmt_files: []         # Optional: paths to additional GMT files (e.g., SynGO)
+
+# ---------------------------------------------------------------------------
+# Drug-gene enrichment
+# ---------------------------------------------------------------------------
+drug_enrichment:
+  sources: ["chembl", "pdsp", "dgidb"]              # Drug target sources: chembl, pdsp, dgidb
+  chembl_scope: "mechanism_or_affinity"  # "mechanism_only" (default, ~3.4k curated MOA drugs)
+                                     # "mechanism_or_affinity" (includes ~600k+ affinity-only compounds;
+                                     #   pair with min_pchembl/max_phase_filter for practical runs)
+  enable_expression_enrichment: false  # opt-in expression-perturbation evidence
+                                       # for Branch-A enrichment.  When false (default), pipeline runs
+                                       # TARGETS-only (byte-identical to pre-Item-11).  When true,
+                                       # an additional 'load_drug_targets_expr' loader produces
+                                       # drug_targets_expr.parquet that drug_enrichment consumes;
+                                       # Branch B / Branch C continue to read drug_targets.parquet
+                                       # so their behaviour is unaffected.
+  expression_sources: ["creeds", "dsigdb"]               # Subset of {"creeds", "dsigdb"}.  Strictly disjoint from
+                                       # 'sources'.  Must be non-empty when
+                                       # enable_expression_enrichment: true (e.g. ["creeds", "dsigdb"]).
+  min_genes_per_drug: 3            # Headline threshold: drugs with fewer target genes are excluded
+                                  #   from drug-gene FDR / exports / plot.  Set conservative.
+  atc_min_genes_per_drug: 1       # ATC enrichment universe threshold.
+                                  #   Must be <= min_genes_per_drug; default null = inherit headline.
+                                  #   Set to 1 to expand the ATC GLS universe (sub-headline drugs
+                                  #   contribute valid drug-level Z to class enrichment but are
+                                  #   excluded from headline drug-gene outputs).  Set to 3 to disable.
+  min_pchembl: null              # Potency filter: null = all, 6.0 = 1µM, 7.0 = 100nM
+  max_phase_filter: 1         # Clinical phase filter: null = all, 1 = Phase I+, 4 = approved only
+  phase_filter_scope: "chembl_only"   # "global" = apply to all sources; "chembl_only" = exempt PDSP/DGIdb
+  confidence_filter: null        # Confidence filter: null = all, "high", "medium"
+  pdsp_dedup_mode: "exact_signature"         # "off" = no dedup; "exact_signature" = collapse PDSP-only drugs with identical targets
+  parent_salt_unification: true   # collapse child/salt CHEMBL IDs onto parent CID before dedup
+                                  #   (recommended; set false as a rollback / debugging escape hatch)
+  fdr_method: "fdr_bh"            # FDR correction method (Benjamini-Hochberg)
+  fdr_threshold: 0.05             # FDR significance threshold
+  include_wilcoxon_auc: true      # Compute Wilcoxon AUC as descriptive complement
+  permutation_test: false         # Optional permutation-based enrichment (off by default)
+  n_permutations: 10000           # Permutations per drug (if permutation_test: true)
+  permutation_seed: 42            # Random seed for reproducibility
+
+# ---------------------------------------------------------------------------
+# ATC class enrichment (DRUGSETS-style GLS regression)
+# ---------------------------------------------------------------------------
+atc_enrichment:
+  atc_levels: [3]              # ATC hierarchy levels: 1=anatomical, 2=therapeutic, 3=pharmacological, 4=chemical
+  min_drugs_per_class: 5           # Minimum drugs per class (DRUGSETS default: 5)
+  two_sided: false                 # One-sided upper-tail (enriched) by default
+  fdr_method: "fdr_bh"            # Benjamini-Hochberg
+  fdr_threshold: 0.05
+  eigenvalue_threshold: 0.1        # Matrix regularization (DRUGSETS default: 0.1)
+  permutation_test: false          # Optional drug-label permutation test
+  n_permutations: 10000
+  permutation_seed: 42
+  atc_universe_mode: "annotated_only"  # "annotated_only" = DRUGSETS-style (only ATC-annotated drugs in test universe)
+                                        # "all_drugs" = legacy (all drugs from enrichment, including unannotated)
+  # Curated drug-sets tested as additional ATC classes (additive; independent of atc_levels).
+  # Empty list = standard behaviour only. Each entry: code (result key, start with the ATC chapter
+  # prefix e.g. 'N06' for correct plot grouping), level (display-only, 1-4), description,
+  # and atc_members (ATC codes - typically Level 5 - defining membership).
+  custom_classes:
+    - code: "N06AB_SSRI"
+      level: 4
+      description: "Selective serotonin reuptake inhibitors (curated: 6 marketed agents)"
+      atc_members: ["N06AB03", "N06AB04", "N06AB05", "N06AB06", "N06AB08", "N06AB10"]
+
+# ---------------------------------------------------------------------------
+# S-PrediXcan disease signature (Module 8.5)
+# ---------------------------------------------------------------------------
+spredixcan:
+  model_type: "mashr"           # mashr, jti, elastic_net
+  tissue_preset: "brain_13"     # brain_13, brain_extended, all_gtex, custom
+  tissues: []                   # override: list specific tissue names (overrides preset)
+  extra_models: []              # paths to non-GTEx .db model files
+  gwas_imputation: false        # DEFERRED v2.0: raises NotImplementedError if true. Uses built-in variant matching.
+  min_snps_used_fraction: 0.1   # gene excluded if <10% of model SNPs found in GWAS
+  exclude_palindromic: true     # skip A/T and C/G SNPs during allele matching
+
+# ---------------------------------------------------------------------------
+# LINCS drug signature extraction
+# ---------------------------------------------------------------------------
+drug_signatures:
+  aggregation: "consensus"                  # consensus, best_dose, per_condition
+  min_profiles: 3
+  preferred_dose: "10 µM"
+  preferred_time: "24 h"
+
+# ---------------------------------------------------------------------------
+# Negative correlation (signature reversal) pipeline (Module 8.7)
+# ---------------------------------------------------------------------------
+negative_correlation:
+  tissues: []                                  # Populated from BRAIN_TISSUES constant if empty
+  correlation_method: "spearman"
+  min_overlapping_genes: 50                    # Minimum overlapping genes for Spearman correlation
+  fdr_threshold: 0.05                          # Global BH-FDR threshold across all drug × tissue tests
+  gene_set_mode: "landmark_bing"                    # Drug signature gene set: "landmark" (978), "landmark_bing" (~7467), "all" (~12328)
+  # lincs_gene_info_path: null                 # Auto-resolved from resources/ if null
+  match_confidence_threshold: "pubchem_cid"    # Min match confidence: "inchikey", "pubchem_cid", "name"
+  exclude_mhc: true                           # MHC included by default; sensitivity always runs
+  min_profiles_aggregated: 3                   # Minimum LINCS profiles for drug inclusion
+  aggregation_mode: "consensus"                # Only "consensus" is wired in v1.0 (best_dose deferred)
+  xsum_top_n: 200                              # Top N genes for XSum. NA when overlap < this.
+  # xsum_top_n_sweep: null                     # Reserved for future XSum sweep (must be null in v1.0)
+  xsum_permutations: 0                         # XSum permutations (0 = no permutation p-value)
+
+# ---------------------------------------------------------------------------
+# Mendelian Randomisation (Branch C)
+# ---------------------------------------------------------------------------
+mr:
+  eqtl_sources:
+    - source: "eqtlgen"
+      path: "resources/eqtl/eqtlgen/"
+      required: true              # fail loud if this source silently degrades
+      min_result_fraction: 0.5    # raise if Phase-2 yield < 50% (blood-eQTL baseline ~90%)
+    # Brain eQTL source:
+    - source: "metabrain_cortex"
+      path: "resources/eqtl/metabrain/"
+      required: true              # guards against a composite-SNP regression
+                                  # (no explicit min -> 0.10 default floor; brain coverage is lower)
+
+  # Instrument selection
+  cis_window_kb: 1000              # ±1Mb from gene TSS
+  instrument_pval: 5.0e-8          # genome-wide significance
+  clump_r2: 0.001                  # conservative LD clumping
+  f_stat_threshold: 10             # weak instrument filter
+
+  # Colocalisation
+  coloc_enabled: true
+  coloc_variance_mode: "reported_se"   # outcome variance source for coloc.abf.
+                                       #   "reported_se" (recommended) uses the GWAS BETA/SE directly -
+                                       #   faithful for case/control with proper log-OR SEs, byte-stable.
+                                       #   "case_control_approx" derives V2 from total-N (cases+controls,
+                                       #   never Neff), MAF + sample case fraction; requires study.n_cases
+                                       #   / n_controls. Opt-in sensitivity mode only.
+  coloc_pp_h4_threshold: 0.80
+  coloc_prior_p1: 1.0e-4
+  coloc_prior_p2: 1.0e-4
+  coloc_prior_p12: 1.0e-5
+  min_coloc_snps: 50
+
+  # Drug matching gating
+  require_coloc: true              # only coloc-supported genes get drug matches
+  require_steiger: false           # Steiger annotates by default; set true to gate
+
+  # Drug-match filters + gene<->drug ID join.
+  drug_match:
+    match_mode: "strict"               # exact Ensembl->Entrez->UniProt->unambiguous-symbol (robust)
+    min_pchembl: null                  # potency floor (null = off; mirrors Branch A)
+    min_phase: 1                       # require Phase I+ drugs (max_phase >= 1; = Branch A max_phase_filter)
+    phase_filter_scope: "chembl_only"  # apply the phase filter to ChEMBL only; exempt PDSP/DGIdb (phase 0)
+    direction_policy: "prefer_inferable"  # keep all matches; rank direction-inferable ones first
+    allow_symbol_fallback: true        # keep the flagged unambiguous-symbol tier as a last resort
+    require_druggable: false           # (unchanged) annotate only; never gate on druggability
+    druggable_genome_path: null        # (unchanged) no druggable-genome / Finan resource yet
+
+  # MHC-region sensitivity. The MHC (chr6, extended) is a
+  # long-range-LD region where cis-MR + single-variant coloc are unreliable.
+  mhc_sensitivity:
+    enabled: true                      # annotate additive mhc_flag + emit mr/sensitivity/mhc_excluded/
+                                       #   view. Primary mr_results/mr_significant/coloc/drugs unchanged.
+    allow_mhc_coordinate_fallback: false  # false = fail loud if the Ensembl-membership annotation
+                                          #   (reference.gene_loc_file_grch38) can't be loaded. true =
+                                          #   opt into an approximate per-source coordinate flag.
+
+  # Parallelisation - tune per environment:
+  #   Native Linux/ext4: n_workers: 8-12
+  #   WSL NTFS (/mnt/c): n_workers: 4-6 (I/O bound)
+  #   HPC: set rule_threads to match SLURM allocation
+  n_workers: 4                     # concurrent per-gene MR tasks
+  # rule_threads: null             # Snakemake thread/CPU reservation (defaults to n_workers)
+
+# ---------------------------------------------------------------------------
+# Open Targets post-analysis annotation
+# ---------------------------------------------------------------------------
+open_targets:
+  enabled: true
+  # disease_efo_id: "EFO_0003761"           # e.g. MDD
+  use_api: true
+  # cache_dir: "resources/open_targets_cache"
+
+# ---------------------------------------------------------------------------
+# Output settings
+# ---------------------------------------------------------------------------
+output:
+  csv: true
+  excel: true
+  html: true
+  manhattan: true
+  qq: true
+  enrichment: true
+  plot_style:
+    figure_formats: [pdf, svg, png]    # PDF primary; SVG for HTML/Illustrator; PNG preview
+    png_dpi: 600
+    max_label_len: 40
+    provenance_footer: true
+    manhattan:
+      chromosome_scale: rank           # rank | bp
+      y_cap: 20.0
+      chromosome_set: autosomes+X      # autosomes | autosomes+X | all
+      highlight_genes: []              # e.g. ["DCC","TCF4"]
+      n_top_labels: 20
+      locus_window_kb: 500
+    volcano:
+      x_axis_mode: magma_z             # magma_z (default, raw signed Z) | top_snp_beta
+      n_top_labels: 15
+      y_cap: 20.0
+    drug_enrichment:
+      size_by: wilcoxon_auc            # wilcoxon_auc | n_target_genes
+      top_n: 20
+      show_mechanism: true
+
+# ---------------------------------------------------------------------------
+# Filesystem roots
+# ---------------------------------------------------------------------------
+# Where the downloaded reference data lives (drug databases, LINCS signatures,
+# pathway GMTs, eQTL summary statistics, genotype reference panel).  Defaults
+# to "resources" relative to the working directory.  Point it at shared storage
+# when running on a cluster, e.g.
+#   resource_dir: "/scratch/prj/ppn_tng/ivan/resources"
+# This must match where `repogen setup-resources` placed the files: entries in
+# resources.yaml already begin with "resources/", so
+#   resource_dir == <setup-resources --target-dir>/resources
+resource_dir: "resources"
+
+output_dir: "results"
+log_level: "INFO"
+# log_file: "logs/repogen.log"

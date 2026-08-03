@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use RepoGen in your research, please cite it as below."
+title: "RepoGen: genomic-driven drug repurposing from GWAS summary statistics"
+abstract: >-
+  RepoGen identifies drug repurposing candidates from GWAS summary statistics
+  by combining three independent lines of evidence: MAGMA-based drug-target and
+  ATC-class enrichment, reversal of imputed disease expression signatures using
+  S-PrediXcan and LINCS L1000, and cis-eQTL Mendelian randomisation with
+  colocalisation. Results from the three branches are reported separately and
+  at their intersection.
+type: software
+license: MIT
+repository-code: "https://github.com/IvanAndru/RepoGen"
+authors:
+  - family-names: Petukhov
+    given-names: Ivan Andrushevich
+    affiliation: King's College London
+    orcid: "https://orcid.org/0009-0006-3161-607X"
+keywords:
+  - drug repurposing
+  - GWAS
+  - Mendelian randomisation
+  - transcriptomics
+  - bioinformatics
+  - psychiatric genetics

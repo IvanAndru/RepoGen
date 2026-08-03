@@ -1,0 +1,57 @@
+# =============================================================================
+# Snakemake profile - King's College London CREATE HPC
+# =============================================================================
+# Submits every rule to SLURM as its own job, using the runtime/mem_mb/threads
+# budgets declared on the rules themselves.
+#
+#   repogen run --config configs/config.yaml --step branch_a --profile profiles/create
+#
+# or with Snakemake directly:
+#
+#   snakemake -s workflows/Snakefile --configfile configs/config.yaml \
+#             --profile profiles/create branch_a_complete
+#
+# Requires: snakemake-executor-plugin-slurm (in envs/repogen.yaml).
+#
+# ADAPTING THIS TO ANOTHER CLUSTER
+# Copy this directory to profiles/<site>/ and change `slurm_partition` (and
+# `slurm_account` if your site requires one). Nothing else is site-specific -
+# per-rule budgets live in the workflow and travel with the pipeline.
+# -----------------------------------------------------------------------------
+
+executor: slurm
+
+# Maximum jobs queued/running at once. CREATE allows 700 concurrent cores per
+# user; this cap keeps a single pipeline run well inside a fair share.
+jobs: 20
+
+# Applied to any rule that does not declare its own value.
+default-resources:
+  slurm_partition: cpu
+  runtime: 120        # minutes
+  mem_mb: 8000
+  # Leave retries to Snakemake alone. Without --no-requeue, a NODE_FAIL is
+  # retried twice over: SLURM requeues the original job while Snakemake, which
+  # has already written that job off as failed, submits a replacement. Both
+  # then run the same rule and write the same outputs concurrently, and the
+  # requeued one is invisible to Snakemake even if it succeeds.
+  slurm_extra: "'--no-requeue'"
+  # CREATE does not require an account string on the shared cpu partition.
+  # Departmental/private partitions may; uncomment and set if sbatch rejects
+  # the job with "invalid account".
+  # slurm_account: <your-account>
+
+# Re-submit a job once if it fails for a transient reason (node failure,
+# scheduler hiccup). Genuine errors fail again and stop the run.
+retries: 1
+
+# Keep going with independent branches when one rule fails, so a single
+# failure does not idle the whole DAG.
+keep-going: True
+
+# Print the reason each job is (re)run - makes cluster logs interpretable.
+printshellcmds: True
+
+# Wait for shared-filesystem latency: outputs written on a compute node can
+# take a moment to become visible to the submitting host.
+latency-wait: 60

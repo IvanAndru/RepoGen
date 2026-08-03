@@ -1,0 +1,286 @@
+# =============================================================================
+# RepoGen External Resources - resources.yaml
+# =============================================================================
+# Defines URLs, checksums, and local paths for all downloadable data.
+# Run ``repogen setup-resources --config configs/resources.yaml`` to
+# fetch and verify everything.
+#
+# Resources with ``manual: true`` cannot be auto-downloaded - the CLI
+# prints instructions for the user to obtain them.
+
+resources:
+  # --- Analysis binaries ---
+  # MAGMA is not installable from conda: the `magma` package on conda-forge is
+  # an unrelated GPU linear-algebra library, and bioconda has no package for
+  # the gene-analysis tool.  Its licence also states that the binaries may not
+  # be redistributed or modified, so RepoGen cannot bundle it in a container
+  # image; instead each installation fetches it from the official source below.
+  # Static Linux build (v1.10, 64-bit) - matches the HPC deployment target.
+  # macOS or Windows users should download the corresponding build from
+  # https://cncr.nl/research/magma/ and point `magma.binary_path` at it.
+  magma_binary:
+    branches: [a]
+    url: "https://vu.data.surfsara.nl/index.php/s/lxDgt2dNdNr6DYt/download"
+    checksum: ""   # sha256 - populate after first download
+    local_path: "resources/bin/magma"
+    postprocess: "extract_magma_binary"
+    description: "MAGMA v1.10 static Linux binary (de Leeuw et al. 2015) - gene and gene-set analysis engine for Branch A"
+
+  # --- Reference genotype data ---
+  magma_ref_1000g:
+    branches: [shared]
+    url: "https://vu.data.surfsara.nl/index.php/s/VZNByNwpD8qqINe/download"
+    checksum: ""   # sha256 - populate after first download
+    local_path: "resources/reference/g1000_eur.bed"
+    postprocess: "extract_plink_zip"
+    description: "1000 Genomes Phase 3 EUR reference (PLINK format, ZIP)"
+
+  # --- Gene ID mapping ---
+  ncbi_gene_info:
+    branches: [shared]
+    url: "https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz"
+    checksum: ""
+    local_path: "resources/reference/gene_info.gz"
+    description: "NCBI gene info - needed for Entrez ID mapping in gene_id_converter"
+
+  ncbi_gene_history:
+    branches: [shared]
+    url: "https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_history.gz"
+    checksum: ""
+    local_path: "resources/reference/gene_history.gz"
+    description: "Gene ID history - resolve deprecated Entrez IDs in gene_id_converter"
+
+  ncbi_gene_loc:
+    branches: [a, b]
+    url: ""
+    checksum: ""
+    local_path: "resources/reference/NCBI37.3.gene.loc"
+    description: "NCBI gene locations (hg19) - primary for Branch A MAGMA"
+    manual: true
+
+  # GRCh38 gene-loc - primary MHC annotation source for
+  # Branch B S-PrediXcan.  Hosted on the SURF Nextcloud instance at
+  # Vrije Universiteit Amsterdam (linked from the official MAGMA
+  # distribution page at https://cncr.nl/research/magma/).  The raw
+  # archive 'NCBI38.zip' (346,959 bytes) contains REPORT, README, and
+  # NCBI38.gene.loc (719,789 bytes, SHA256
+  # 251fa802c60bd42802b0ea62b62e03ffbf0494982a8f82984a0b709bed082290).
+  ncbi_gene_loc_grch38:
+    branches: [b, c]
+    url: "https://vu.data.surf.nl/index.php/s/yj952iHqy5anYhH/download"
+    checksum: "sha256:a6386efe10f1d9248c2768a598363696496c66dd2cdffee33a9c3005c726365c"
+    local_path: "resources/reference/NCBI38.gene.loc"
+    postprocess: "extract_ncbi38_gene_loc"
+    description: "MAGMA/NCBI gene locations (GRCh38), primary MHC annotation source for Branch B S-PrediXcan"
+
+  # --- BioMart gene ID dictionaries (Ensembl <-> Symbol <-> UniProt) ---
+  # Two-column TSV files exported from Ensembl BioMart.  These cannot be
+  # auto-downloaded because Ensembl BioMart requires an interactive query
+  # or a versioned REST/XML request tied to a specific Ensembl release.
+  # To generate:
+  #   1. Go to https://www.ensembl.org/biomart
+  #   2. Dataset: Ensembl Genes -> Human genes (GRCh37 archive for hg19)
+  #   3. For dico1: Attributes -> Gene stable ID, Gene name -> export TSV
+  #   4. For dico2: Attributes -> Gene name, Gene stable ID -> export TSV
+  #   5. For dico3: Attributes -> UniProtKB/Swiss-Prot ID, Gene stable ID -> export TSV
+  #   6. Remove header line if present; save as plain two-column TSV.
+  biomart_dico1:
+    branches: [shared]
+    local_path: "resources/reference/biomart_dico1"
+    description: "BioMart Ensembl-to-gene-name dictionary - primary source for Ensembl<->Symbol mapping in GeneIDConverter"
+    manual: true
+
+  biomart_dico2:
+    branches: [shared]
+    local_path: "resources/reference/biomart_dico2"
+    description: "BioMart gene-name-to-Ensembl dictionary - primary source for Symbol->Ensembl mapping in GeneIDConverter"
+    manual: true
+
+  biomart_dico3:
+    branches: [shared]
+    local_path: "resources/reference/biomart_dico3"
+    description: "BioMart UniProt-to-Ensembl dictionary - only source for UniProt<->Ensembl mapping (no NCBI alternative)"
+    manual: true
+
+  liftover_chain:
+    branches: [b]
+    # Use the 'soe' host: the older 'hgdownload.cse.ucsc.edu' name now serves a
+    # certificate that does not match it, so HTTPS fails verification.
+    url: "https://hgdownload.soe.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz"
+    checksum: ""
+    local_path: "resources/reference/hg19ToHg38.over.chain.gz"
+    description: "UCSC hg19->hg38 liftover chain"
+
+  # --- H-MAGMA annotation files (optional, for neuropsychiatric analysis) ---
+  hmagma_fetal_brain:
+    branches: [a]
+    url: "https://raw.githubusercontent.com/thewonlab/H-MAGMA/master/Input_Files/Fetal_brain.genes.annot"
+    checksum: ""
+    local_path: "resources/hmagma/Fetal_brain.genes.annot"
+    description: "H-MAGMA fetal brain Hi-C annotation (Won Lab GitHub). For neuropsychiatric GWAS."
+    optional: true
+
+  hmagma_adult_brain:
+    branches: [a]
+    url: "https://raw.githubusercontent.com/thewonlab/H-MAGMA/master/Input_Files/Adult_brain.genes.annot"
+    checksum: ""
+    local_path: "resources/hmagma/Adult_brain.genes.annot"
+    description: "H-MAGMA adult brain Hi-C annotation (Won Lab GitHub). For neuropsychiatric GWAS."
+    optional: true
+
+  hmagma_ipsc_neurons:
+    branches: [a]
+    url: "https://raw.githubusercontent.com/thewonlab/H-MAGMA/master/Input_Files/%20iPSC_derived_neuro.genes.annot"
+    checksum: ""
+    local_path: "resources/hmagma/iPSC_neurons.genes.annot"
+    description: "H-MAGMA iPSC-derived neuron Hi-C annotation (Won Lab GitHub). For neuropsychiatric GWAS."
+    optional: true
+
+  # --- Pathway gene sets ---
+  msigdb_go:
+    branches: [a]
+    url: "https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2024.1.Hs/c5.all.v2024.1.Hs.symbols.gmt"
+    checksum: ""
+    local_path: "resources/pathways/c5.all.v2024.1.Hs.symbols.gmt"
+    description: "MSigDB v2024.1 GO gene sets"
+
+  msigdb_cp:
+    branches: [a]
+    url: "https://data.broadinstitute.org/gsea-msigdb/msigdb/release/2024.1.Hs/c2.cp.v2024.1.Hs.symbols.gmt"
+    checksum: ""
+    local_path: "resources/pathways/c2.cp.v2024.1.Hs.symbols.gmt"
+    description: "MSigDB v2024.1 canonical pathways (KEGG, Reactome, WikiPathways, BioCarta)"
+
+  # --- Drug-target data ---
+  chembl_sqlite:
+    branches: [shared]
+    url: "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_35/chembl_35_sqlite.tar.gz"
+    checksum: ""
+    local_path: "resources/drugs/chembl_35.db"
+    archive_member: "chembl_35/chembl_35_sqlite/chembl_35.db"
+    description: "ChEMBL v35 SQLite database - primary drug-target source for drug_loader"
+
+  pdsp_ki:
+    branches: [shared]
+    description: "PDSP Ki database - manual download required (no direct URL). See https://pdsp.unc.edu/databases/kidb.php"
+    local_path: "resources/drugs/pdsp_ki.csv"
+    manual: true
+
+  dgidb_interactions:
+    branches: [shared]
+    url: "https://dgidb.org/data/2024-Dec/interactions.tsv"
+    checksum: ""
+    local_path: "resources/drugs/dgidb_interactions.tsv"
+    description: "DGIdb v5.0.7 (Dec 2024) bulk interaction download - secondary source for confidence scoring"
+
+  chembl_pubchem_unichem:
+    branches: [shared]
+    url: "https://ftp.ebi.ac.uk/pub/databases/chembl/UniChem/data/wholeSourceMapping/src_id1/src1src22.txt.gz"
+    checksum: ""
+    local_path: "resources/drugs/src1src22.txt.gz"
+    description: "UniChem ChEMBL->PubChem CID mapping - populates drug_pubchem_cid for LINCS PubChem matching"
+
+  # --- Drug expression-perturbation signatures ---
+  # These resources are *optional* (existing semantics: documentation marker
+  # only) and *gated* (new semantics: default-deny in setup-resources unless
+  # the gating flag resolves true via --pipeline-config).  H-MAGMA's
+  # optional: true continues to auto-download as today; only entries that
+  # carry the new `enabled_by:` field participate in the gating contract.
+  creeds_drug_perturbations:
+    branches: [a]
+    url: "https://maayanlab.cloud/CREEDS/download/single_drug_perturbations-v1.0.json"
+    checksum: ""
+    local_path: "resources/drug_perturbations/creeds.json"
+    description: "CREEDS single-drug perturbation up/down gene signatures (Wang et al. 2016)"
+    optional: true
+    enabled_by: "drug_enrichment.enable_expression_enrichment"
+
+  dsigdb_d3:
+    branches: [a]
+    # Direct GMT endpoint (upstream URL drift, May 2026): the historic
+    # DSigDB_All.zip archive is no longer served (404); DSigDB now publishes
+    # per-signature GMT files directly. D3.gmt is the drug-perturbation
+    # transcriptomic-signature subset and is the only DSigDB subset the
+    # consumes. Format is identical to the previous post-extracted member
+    # (tab-separated: set_name<TAB>description<TAB>gene1<TAB>gene2...), so
+    # load_dsigdb() in repogen/data/drug_loader.py parses it unchanged.
+    # local_path retains the .tsv suffix to preserve the downstream path
+    # contract referenced in workflows/rules/drug_enrichment.smk.
+    url: "https://dsigdb.tanlab.org/Downloads/D3.gmt"
+    checksum: ""
+    local_path: "resources/drug_perturbations/dsigdb_d3.tsv"
+    description: "DSigDB D3 (drug-perturbation transcriptomic signatures, Yoo et al. 2015)"
+    optional: true
+    enabled_by: "drug_enrichment.enable_expression_enrichment"
+
+  # --- LINCS drug signatures ---
+  lincs_l1000:
+    branches: [b]
+    description: "LINCS L1000 Level 5 GCTX - manual download required (~18GB). See https://clue.io/data/CMap2020"
+    local_path: "resources/drug_signatures/level5_beta_trt_cp_n720216x12328.gctx"
+    manual: true
+
+  lincs_gene_metadata:
+    branches: [b]
+    description: "LINCS L1000 gene metadata (maps probe IDs to Entrez Gene IDs). Bundled with L1000 download."
+    local_path: "resources/drug_signatures/geneinfo_beta.txt"
+    manual: true
+
+  lincs_drug_repurposing_hub:
+    branches: [b]
+    url: "https://s3.amazonaws.com/data.clue.io/repurposing/downloads/repurposing_samples_20200324.txt"
+    checksum: ""
+    local_path: "resources/drug_signatures/repurposing_hub.csv"
+    description: "Drug Repurposing Hub sample metadata (InChIKey, PubChem CID) - needed for drug_signatures InChIKey matching"
+    postprocess: "repurposing_hub_tsv_to_csv"
+
+  lincs_compound_metadata:
+    branches: [b]
+    description: "LINCS L1000 compound metadata. Bundled with L1000 download."
+    local_path: "resources/drug_signatures/compoundinfo_beta.txt"
+    manual: true
+
+  lincs_gene_info:
+    branches: [b]
+    description: "Derived from geneinfo_beta.txt during setup-resources. Maps Entrez IDs to landmark/BING gene status."
+    local_path: "resources/drug_signatures/lincs_gene_info.tsv"
+    derived_from: "lincs_gene_metadata"
+
+  # --- S-PrediXcan models ---
+  predixcan_models:
+    branches: [b]
+    description: "PrediXcan MASHR models for 13 brain tissues - download from predictdb.org"
+    local_path: "resources/predixcan_models/"
+    manual: true
+
+  predixcan_covariances:
+    branches: [b]
+    description: "PrediXcan covariance files (.txt.gz) - download from predictdb.org"
+    local_path: "resources/predixcan_models/covariances/"
+    manual: true
+
+  # --- eQTL data (for future MR module) ---
+  gtex_v8_eqtl:
+    branches: [c]
+    description: "GTEx v8 tissue-specific eQTL summary statistics - manual download from GTEx Portal (requires dbGaP)"
+    local_path: "resources/eqtl/gtex_v8/"
+    manual: true
+
+  eqtlgen:
+    branches: [c]
+    url: "https://www.eqtlgen.org/cis-eqtls.html"
+    description: "eQTLGen cis-eQTL summary statistics (blood, 31k samples). URL is a landing page - user must manually download the cis-eQTL TSV file and accept terms of use."
+    local_path: "resources/eqtl/eqtlgen/"
+    manual: true
+
+  metabrain_cortex:
+    branches: [c]
+    description: "MetaBrain cortex cis-eQTL summary statistics - manual download (requires terms acceptance at metabrain.nl). Raw per-chromosome files (chr1..chr22)."
+    local_path: "resources/eqtl/metabrain/"
+    manual: true
+
+  metabrain_cortex_normalized:
+    branches: [c]
+    description: "Derived from raw MetaBrain per-chromosome files. Combines chr1..chr22, normalizes columns to MR schema, derives other allele from SNPAlleles."
+    local_path: "resources/eqtl/metabrain/metabrain_cortex_normalized.tsv.gz"
+    derived_from: "metabrain_cortex"

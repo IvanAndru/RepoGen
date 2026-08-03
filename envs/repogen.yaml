@@ -1,0 +1,60 @@
+name: repogen
+#
+# Development environment recipe: version ranges, solved fresh on any platform.
+# Use this when working on RepoGen or when running on macOS/other platforms.
+#
+# For REPRODUCIBLE deployment (HPC, containers, publication), use the lock
+# files instead - they pin every package to the exact version RepoGen was
+# validated with, on linux-64:
+#
+#   conda create --name repogen --file envs/repogen.linux-64.lock
+#   conda activate repogen
+#   pip install --no-deps -r envs/repogen-pip.linux-64.txt
+#   pip install -e .
+#
+# Regenerate the lock after intentional dependency changes:
+#   conda list --explicit --md5 > envs/repogen.linux-64.lock
+#
+# NOTE: MAGMA is deliberately absent from this file. The `magma` package on
+# conda-forge is an unrelated GPU linear-algebra library, and bioconda has no
+# package for the MAGMA gene-analysis tool - adding `magma` here installs the
+# wrong software. MAGMA is fetched from its official distribution by
+# `repogen setup-resources` into <resource_dir>/bin/magma.
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.12
+  - snakemake>=8.0
+  # Cluster submission. Snakemake 8 removed --cluster/--cluster-config in
+  # favour of executor plugins; this one turns rule `resources:` into sbatch
+  # requests. Needed only for HPC runs, harmless locally.
+  - snakemake-executor-plugin-slurm>=2.6
+  - pandas>=2.0
+  - numpy>=1.24
+  - scipy>=1.11
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - statsmodels>=0.14
+  - pydantic>=2.0
+  - pyyaml>=6.0
+  - click>=8.0
+  - openpyxl>=3.1
+  - pyarrow>=14.0
+  - h5py>=3.10
+  - mygene>=3.2
+  - requests>=2.31
+  - rapidfuzz>=3.0
+  - pyliftover>=0.4
+  - tqdm>=4.66
+  - jinja2>=3.1
+  - pytest>=7.0
+  - rich>=13.0
+  - plink=1.9
+  - pip:
+    - cmapPy>=4.0
+    - adjustText>=0.8
+    - upsetplot>=0.9
+    # Optional: install cmapPy for LINCS negative correlation branch
+    # pip install repogen[lincs]

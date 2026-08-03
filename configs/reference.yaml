@@ -1,0 +1,24 @@
+# =============================================================================
+# RepoGen Reference Data Paths - reference.yaml
+# =============================================================================
+# Paths to reference datasets.  These are merged into the main config
+# at load time (values here act as defaults; config.yaml overrides).
+
+reference:
+  genome_dir: "resources/reference"
+  population: "EUR"
+  bfile_prefix: "g1000_eur"
+  gene_loc_file: "resources/reference/NCBI37.3.gene.loc"
+  # GRCh38 gene-loc for Branch B S-PrediXcan MHC annotation.
+  # Falls back to gene_loc_file (GRCh37, projected via Ensembl ID) if unset.
+  gene_loc_file_grch38: "resources/reference/NCBI38.gene.loc"
+  ensembl_to_name: "resources/reference/biomart_dico1"
+  name_to_ensembl: "resources/reference/biomart_dico2"
+  uniprot_to_ensembl: "resources/reference/biomart_dico3"
+  liftover_chain: "resources/reference/hg19ToHg38.over.chain.gz"
+  # NCBI gene mapping files for Entrez ID resolution (GeneIDConverter)
+  ncbi_gene_info: "resources/reference/gene_info.gz"
+  ncbi_gene_history: "resources/reference/gene_history.gz"
+  # PredictDB model files for S-PrediXcan (Module 8.5)
+  predixcan_model_dir: "resources/predixcan_models"        # e.g., /path/to/predictdb/mashr/
+  predixcan_covariance_dir: "resources/predixcan_models/covariances"   # if null, assumes same dir as model_dir

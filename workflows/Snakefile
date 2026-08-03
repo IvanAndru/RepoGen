@@ -1,0 +1,102 @@
+"""RepoGen - Genomic-driven Drug Repurposing Pipeline.
+
+Main Snakemake entry point.
+Usage:
+    snakemake -s workflows/Snakefile --configfile configs/config.yaml -n <target>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Include rule files in dependency order
+# ---------------------------------------------------------------------------
+
+include: "rules/common.smk"
+include: "rules/prepare_data.smk"
+include: "rules/gene_annotation.smk"
+include: "rules/magma_analysis.smk"
+include: "rules/drug_enrichment.smk"
+include: "rules/negative_correlation.smk"
+include: "rules/mendelian_randomisation.smk"
+include: "rules/visualization.smk"
+
+
+# ---------------------------------------------------------------------------
+# Convenience targets (Section 14.2)
+# ---------------------------------------------------------------------------
+
+rule magma_complete:
+    input:
+        rules.magma_gene.output,
+        rules.magma_pathway.output,
+        f"{PLOT_STATUS_DIR}/plot_magma_gene.json",
+        f"{PLOT_STATUS_DIR}/plot_magma_pathway.json",
+        rules.export_magma.output,
+
+
+rule drug_complete:
+    input:
+        rules.load_drug_targets.output,
+        rules.drug_enrichment.output,
+        rules.atc_enrichment.output,
+        f"{PLOT_STATUS_DIR}/plot_drug_enrichment.json",
+        f"{PLOT_STATUS_DIR}/plot_atc_enrichment.json",
+        rules.export_drug.output,
+
+
+rule correlation_complete:
+    input:
+        rules.spredixcan.output,
+        rules.extract_drug_signatures.output,
+        rules.negative_correlation.output,
+        f"{PLOT_STATUS_DIR}/plot_tissue_signature.json",
+        f"{PLOT_STATUS_DIR}/plot_correlation.json",
+        rules.export_correlation.output,
+
+
+rule mr_complete:
+    input:
+        rules.mendelian_randomisation.output,
+        f"{PLOT_STATUS_DIR}/plot_mr_forest.json",
+        f"{PLOT_STATUS_DIR}/plot_mr_coloc.json",
+        f"{PLOT_STATUS_DIR}/plot_mr_drug_summary.json",
+        rules.export_mr.output,
+
+
+rule branch_a_complete:
+    input:
+        rules.magma_complete.input,
+        rules.drug_complete.input,
+
+
+rule branch_b_complete:
+    input:
+        rules.correlation_complete.input,
+
+
+rule branch_c_complete:
+    input:
+        rules.mr_complete.input,
+
+
+rule full_report:
+    input:
+        rules.branch_a_complete.input,
+        rules.branch_b_complete.input,
+        rules.branch_c_complete.input,
+        f"{PLOT_STATUS_DIR}/plot_convergence.json",
+        rules.combine_results_full.output,
+        rules.export_combined_full.output,
+        rules.html_report_full.output,
+
+
+rule report_available:
+    input:
+        rules.combine_results_available.output,
+        rules.export_combined_available.output,
+        rules.html_report_available.output,
+
+
+rule all:
+    input:
+        rules.full_report.input,
+    default_target: True

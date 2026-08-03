@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+*.conda/
+
+# Snakemake
+.snakemake/
+
+# Runtime output
+results/
+logs/
+
+# Large data (managed by resources.py)
+resources/downloads/
+resources/drug_signatures/*.gctx
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI tools
+.claude/

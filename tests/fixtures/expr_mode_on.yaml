@@ -1,0 +1,17 @@
+# Minimal Snakemake configfile overlay for verifying
+# the expression-enrichment mode-ON DAG and gating contract.
+#
+# Usage (verification, not production):
+#
+#   snakemake -n --rulegraph \
+#     --configfile configs/config.yaml \
+#     --configfile tests/fixtures/expr_mode_on.yaml
+#
+# Snakemake merges configfiles left-to-right; this overlay flips only
+# the two Item-11 keys and inherits everything else from the primary
+# config.yaml.  Use this rather than dotted --config a.b.c=value, which
+# is brittle across Snakemake versions.
+
+drug_enrichment:
+  enable_expression_enrichment: true
+  expression_sources: ["creeds", "dsigdb"]
