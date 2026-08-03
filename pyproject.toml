@@ -21,9 +21,11 @@ keywords = [
     "bioinformatics",
 ]
 classifiers = [
+    # No "License ::" classifier here. PEP 639 replaced those with the
+    # `license` expression declared above, and setuptools refuses to build a
+    # project that states both.
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
