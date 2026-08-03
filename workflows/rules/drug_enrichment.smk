@@ -261,7 +261,7 @@ rule drug_enrichment:
         study_dir=STUDY_DIR,
     threads: 4
     resources:
-        runtime=120,
+        runtime=60,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/drug_enrichment.log",
@@ -292,7 +292,7 @@ rule atc_enrichment:
         output_root=OUTPUT_ROOT,
     threads: 1
     resources:
-        runtime=120,
+        runtime=60,
         mem_mb=32000,
     log:
         f"{LOG_DIR}/atc_enrichment.log",

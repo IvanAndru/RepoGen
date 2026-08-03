@@ -1104,7 +1104,7 @@ class TestResolveNeuralCellLinesFromYaml:
             )
 
     def test_snakemake_helper_returns_empty_for_uniform_mode(self) -> None:
-        """The Snakemake ``r4_neural_cell_lines_flag`` helper (defined in
+        """The Snakemake ``neural_cell_lines_flag_for`` helper (defined in
         common.smk) must emit an empty string for uniform mode.  We test
         the underlying logic by exercising the same branch condition.
 

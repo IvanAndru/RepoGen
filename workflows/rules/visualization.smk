@@ -519,7 +519,7 @@ rule html_report_full:
 
 rule combine_results_available:
     input:
-        existing_k4_available_inputs,
+        existing_available_inputs,
     output:
         meta_json=f"{REPORT_AVAILABLE_DIR}/combined_metadata.json",
     params:

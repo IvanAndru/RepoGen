@@ -47,7 +47,7 @@ rule prepare_gwas:
         ),
     threads: 1
     resources:
-        runtime=60,
+        runtime=30,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/prepare_gwas.log",

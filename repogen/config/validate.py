@@ -139,6 +139,14 @@ def check_resources(config: PipelineConfig) -> list[ResourceCheck]:
         _file_check("LINCS gene metadata", BRANCH_B, sig_dir / "geneinfo_beta.txt")
     )
     checks.append(
+        _file_check(
+            "LINCS landmark gene list", BRANCH_B,
+            config.negative_correlation.lincs_gene_info_path
+            or sig_dir / "lincs_gene_info.tsv",
+            detail="derived from geneinfo_beta.txt by setup-resources",
+        )
+    )
+    checks.append(
         _dir_check("PredictDB models", BRANCH_B, ref.predixcan_model_dir)
     )
     checks.append(

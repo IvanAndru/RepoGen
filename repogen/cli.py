@@ -334,6 +334,30 @@ def validate(config_path: Path, reference_path: Optional[Path], strict: bool) ->
             raise SystemExit(1)
 
 
+def _default_target_dir(pipeline_config: Path | None) -> Path:
+    """Where downloads should land when --target-dir was not given.
+
+    ``local_path`` entries in resources.yaml already carry a ``resources/``
+    prefix, so the base directory is the parent of ``resource_dir``. Deriving
+    it here means a config pointing at cluster scratch is honoured; otherwise
+    setup-resources would write into the working directory while every other
+    command read from the configured root, and the two would never meet.
+    """
+    if pipeline_config is None:
+        return Path(".")
+    try:
+        raw = yaml.safe_load(pipeline_config.read_text(encoding="utf-8")) or {}
+        resource_dir = raw.get("resource_dir")
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning("Could not read resource_dir from %s: %s", pipeline_config, exc)
+        return Path(".")
+    if not resource_dir:
+        return Path(".")
+    base = Path(resource_dir).parent
+    logger.info("Resource base directory taken from %s: %s", pipeline_config, base)
+    return base
+
+
 # --- repogen setup-resources --------------------------------------------
 @main.command("setup-resources")
 @click.option(
@@ -346,9 +370,12 @@ def validate(config_path: Path, reference_path: Optional[Path], strict: bool) ->
 @click.option(
     "--target-dir",
     type=click.Path(path_type=Path),
-    default=".",
-    show_default=True,
-    help="Base directory for downloaded resources.",
+    default=None,
+    help=(
+        "Base directory for downloaded resources. Defaults to the parent of "
+        "'resource_dir' from --pipeline-config when that is given, and to the "
+        "working directory otherwise."
+    ),
 )
 @click.option(
     "--pipeline-config", "pipeline_config",
@@ -375,12 +402,15 @@ def validate(config_path: Path, reference_path: Optional[Path], strict: bool) ->
 )
 def setup_resources(
     resources_path: Path,
-    target_dir: Path,
+    target_dir: Path | None,
     pipeline_config: Path | None,
     branch: tuple[str, ...],
 ) -> None:
     """Download and verify external data dependencies."""
     from repogen.data.resources import setup_resources as _setup_resources
+
+    if target_dir is None:
+        target_dir = _default_target_dir(pipeline_config)
 
     # Accept both --branch a --branch b and --branch a,b
     selected: set[str] | None = None

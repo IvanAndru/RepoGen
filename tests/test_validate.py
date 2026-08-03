@@ -66,6 +66,7 @@ def _populate_all(tmp_path: Path) -> None:
     (res / "pathways" / "c5.all.gmt").write_text("x")
     (res / "drug_signatures").mkdir(parents=True)
     (res / "drug_signatures" / "level5.gctx").write_text("x")
+    (res / "drug_signatures" / "lincs_gene_info.tsv").write_text("x")
     (res / "drug_signatures" / "repurposing_hub.csv").write_text("x")
     (res / "drug_signatures" / "geneinfo_beta.txt").write_text("x")
     (res / "predixcan_models").mkdir(parents=True)
@@ -128,6 +129,22 @@ class TestResourceChecks:
     def test_every_branch_is_covered(self, tmp_path: Path) -> None:
         checks = check_resources(_config(tmp_path))
         assert {c.branch for c in checks} == {SHARED, BRANCH_A, BRANCH_B, BRANCH_C}
+
+    def test_lincs_gene_info_is_checked(self, tmp_path: Path) -> None:
+        """Branch B reads a derived landmark gene list, so validate must see it.
+
+        A real cluster run failed at the negative_correlation rule while
+        validate had reported Branch B fully satisfied, because this file was
+        the one Branch B input nothing checked for.
+        """
+        _populate_all(tmp_path)
+        (tmp_path / "resources" / "drug_signatures" / "lincs_gene_info.tsv").unlink()
+        with patch("repogen.config.validate.shutil.which", return_value="/usr/bin/tool"):
+            checks = check_resources(_config(tmp_path))
+        missing = [c.name for c in checks if not c.ok]
+        assert any("landmark" in n.lower() for n in missing), (
+            f"a missing lincs_gene_info.tsv was not reported; missing={missing}"
+        )
 
     def test_summary_counts(self, tmp_path: Path) -> None:
         _populate_all(tmp_path)

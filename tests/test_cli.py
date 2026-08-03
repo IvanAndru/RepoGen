@@ -357,6 +357,38 @@ def test_branch_b_heavy_resource_via_cli(minimal_config_file: Path) -> None:
     assert captured_cmd[res_idx + 1] == "branch_b_heavy=1"
 
 
+# --- setup-resources target directory ------------------------------------
+
+
+class TestSetupResourcesTargetDir:
+    """--target-dir must default to the configured resource root.
+
+    A cluster run put resource_dir on scratch, and setup-resources still wrote
+    into the working directory, so the derived LINCS gene list was generated
+    somewhere nothing else looked for it.
+    """
+
+    def test_defaults_to_parent_of_resource_dir(self, tmp_path: Path) -> None:
+        from repogen.cli import _default_target_dir
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "study:\n  name: T\n  gwas_input: g.tsv\n"
+            "resource_dir: /scratch/proj/repogen/resources\n",
+            encoding="utf-8",
+        )
+        assert _default_target_dir(cfg) == Path("/scratch/proj/repogen")
+
+    def test_falls_back_to_cwd_without_a_config(self) -> None:
+        from repogen.cli import _default_target_dir
+        assert _default_target_dir(None) == Path(".")
+
+    def test_falls_back_to_cwd_when_resource_dir_absent(self, tmp_path: Path) -> None:
+        from repogen.cli import _default_target_dir
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("study:\n  name: T\n  gwas_input: g.tsv\n", encoding="utf-8")
+        assert _default_target_dir(cfg) == Path(".")
+
+
 # --- setup-resources --pipeline-config wiring ---------
 
 

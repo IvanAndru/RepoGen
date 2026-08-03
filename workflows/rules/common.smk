@@ -1,4 +1,35 @@
-"""Shared constants and helpers for the RepoGen Snakemake workflow."""
+"""Shared constants and helpers for the RepoGen Snakemake workflow.
+
+Resource budgets
+~~~~~~~~~~~~~~~~
+Each rule declares its own ``threads``, ``runtime`` and ``mem_mb`` so the
+budgets travel with the pipeline rather than living in a site profile. The
+values are drawn from a full PGC3 schizophrenia run (7.66M variants, 17,189
+genes) on KCL CREATE:
+
+    rule                       observed        budget
+    prepare_gwas                2m29           30m
+    prepare_gwas_spredixcan     2m10           30m
+    spredixcan                  3m43, 2.4 GB   60m, 8 GB
+    extract_drug_signatures     9m14           120m
+    magma_gene                  18-21m         90m
+    magma_pathway               <1m            60m
+    drug_enrichment             3m12           60m
+    atc_enrichment              <1m            60m
+    negative_correlation        19m56, 5.2 GB  60m, 16 GB
+    load_drug_targets           37m            120m
+    mendelian_randomisation     20h36, 26 GB   40h, 32 GB
+
+Runtimes carry roughly 3-6x headroom; a timeout is recoverable because
+Snakemake resubmits once. Memory is deliberately less aggressive, since an
+out-of-memory kill loses the whole job, and it was only reduced where a peak
+was actually measured. Over-requesting is not free either: a large request
+queues longer on a busy scheduler, which is the usual reason a run appears
+stuck in PENDING.
+
+Scale these for a larger GWAS or a wider tissue set. Only
+``mendelian_randomisation`` is genuinely long; everything else is minutes.
+"""
 
 # Os, Path and WorkflowError are used by the other rule files too: Snakemake
 # evaluates all included files in one namespace, so these imports serve the
@@ -91,7 +122,7 @@ def opt_flag(flag, value):
 from repogen.data.drug_signatures import resolve_neural_cell_lines_from_yaml as _resolve_neural_cell_lines
 
 
-def r4_neural_cell_lines_flag(ds_cfg):
+def neural_cell_lines_flag_for(ds_cfg):
     """Return ``--neural-cell-lines <csv>`` iff a non-uniform mode is
     requested; otherwise empty string.  Delegates to
     :func:`repogen.data.drug_signatures.resolve_neural_cell_lines_from_yaml`.
@@ -103,10 +134,10 @@ def r4_neural_cell_lines_flag(ds_cfg):
 
 
 # ---------------------------------------------------------------------------
-# K4 availability helpers - canonical branch result files
+# Availability helpers - canonical branch result files
 # ---------------------------------------------------------------------------
 
-K4_AVAILABLE_RESULT_FILES = [
+AVAILABLE_RESULT_FILES = [
     f"{MAGMA_DIR}/{STUDY}_gene_results.parquet",
     f"{MAGMA_DIR}/{STUDY}_pathway_results.parquet",
     f"{DRUG_DIR}/{STUDY}_drug_enrichment.parquet",
@@ -118,10 +149,10 @@ K4_AVAILABLE_RESULT_FILES = [
 ]
 
 
-def existing_k4_available_inputs(wildcards):
-    """Return canonical K4 result files that currently exist on disk.
+def existing_available_inputs(wildcards):
+    """Return the canonical branch result files that currently exist on disk.
 
-    The order matches ``K4_AVAILABLE_RESULT_FILES`` (deterministic).
+    The order matches ``AVAILABLE_RESULT_FILES`` (deterministic).
     Accepts *wildcards* (unused) to satisfy the Snakemake input-function contract.
     """
-    return [f for f in K4_AVAILABLE_RESULT_FILES if os.path.isfile(f)]
+    return [f for f in AVAILABLE_RESULT_FILES if os.path.isfile(f)]

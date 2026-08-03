@@ -28,7 +28,7 @@ rule prepare_gwas_spredixcan:
         target_build="GRCh38",
     threads: 1
     resources:
-        runtime=120,
+        runtime=30,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/prepare_gwas_spredixcan.log",
@@ -64,8 +64,8 @@ rule spredixcan:
         spx_dir=SPX_DIR,
     threads: 4
     resources:
-        runtime=360,
-        mem_mb=16000,
+        runtime=60,
+        mem_mb=8000,
         branch_b_heavy=1,
     log:
         f"{LOG_DIR}/spredixcan.log",
@@ -97,14 +97,14 @@ rule extract_drug_signatures:
         #
         # the raw-YAML path must honour
         # ``include_neural_tumor_cell_lines`` when ``neural_cell_lines`` is
-        # unset.  ``r4_neural_cell_lines_flag`` (defined in common.smk)
+        # unset.  ``neural_cell_lines_flag_for`` (defined in common.smk)
         # delegates to ``resolve_neural_cell_lines_from_yaml`` - the same
         # helper that ``DrugSignaturesConfig`` uses - so this rule and the
         # Pydantic validator share a single source of truth.  For non-
         # uniform modes we ALWAYS pass the resolved list explicitly; the
         # CLI fallback is intentionally never reached from Snakemake.
         cell_line_weighting=config.get("drug_signatures", {}).get("cell_line_weighting", "uniform"),
-        neural_cell_lines_flag=r4_neural_cell_lines_flag(
+        neural_cell_lines_flag=neural_cell_lines_flag_for(
             config.get("drug_signatures", {})
         ),
         neural_weight=config.get("drug_signatures", {}).get("neural_weight", 3.0),
@@ -115,7 +115,7 @@ rule extract_drug_signatures:
         ),
     threads: 4
     resources:
-        runtime=480,
+        runtime=120,
         mem_mb=32000,
         branch_b_heavy=1,
     log:
@@ -154,7 +154,7 @@ rule negative_correlation:
         nc_dir=NC_DIR,
     threads: 4
     resources:
-        runtime=120,
+        runtime=60,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/negative_correlation.log",

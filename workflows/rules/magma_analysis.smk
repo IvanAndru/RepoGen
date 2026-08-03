@@ -20,7 +20,7 @@ rule magma_gene:
         source_parquet=f"{MAGMA_DIR}/{STUDY}.genes.parquet",
     threads: 4
     resources:
-        runtime=240,
+        runtime=90,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/magma_gene.log",
@@ -65,7 +65,7 @@ rule magma_pathway:
         source_meta=f"{OUTPUT_ROOT}/{STUDY}_pathway_results_meta.json",
     threads: 2
     resources:
-        runtime=240,
+        runtime=60,
         mem_mb=16000,
     log:
         f"{LOG_DIR}/magma_pathway.log",

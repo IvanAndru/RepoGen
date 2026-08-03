@@ -1105,7 +1105,12 @@ def run_negative_correlation(
 
     lincs_path = nc_config.lincs_gene_info_path
     if lincs_path is None:
-        lincs_path = Path("resources") / "drug_signatures" / "lincs_gene_info.tsv"
+        # Resolve against the configured resource root, not the working
+        # directory. A literal "resources/" only happens to work when the
+        # pipeline is run from a checkout that also holds the data; on a
+        # cluster the resources live on scratch and the working directory
+        # does not.
+        lincs_path = Path(config.resource_dir) / "drug_signatures" / "lincs_gene_info.tsv"
     if not lincs_path.exists():
         raise FileNotFoundError(
             f"lincs_gene_info.tsv not found at {lincs_path}. "
@@ -1298,11 +1303,10 @@ def run_negative_correlation(
             "mhc_excluded": {"n_significant_fdr": n_sig_sens},
         }
 
-    # Extend the existing metadata.json
-    # with an ``r3_provenance`` subkey rather than creating a second
-    # metadata file.  Keeps a single declared Snakemake metadata output
-    # and mirrors the ``sensitivity`` subkey pattern.
-    metadata["r3_provenance"] = {
+    # Extend the existing metadata.json with an ``xsum_provenance`` subkey
+    # rather than creating a second metadata file. Keeps a single declared
+    # Snakemake metadata output and mirrors the ``sensitivity`` subkey.
+    metadata["xsum_provenance"] = {
         "xsum_permutations": int(nc_config.xsum_permutations),
         "xsum_seed": int(nc_config.xsum_seed),
         "permutation_calibration": {

@@ -53,6 +53,20 @@ summary statistics along three independent lines of evidence.
 - Pinned conda and pip lock files for reproducible environments
 - Container image built and published by CI on tagged releases
 
+### Validated
+
+All three branches were run end to end on a SLURM cluster (KCL CREATE) against
+PGC3 schizophrenia wave 3, 7.66M variants:
+
+- Branch A: 18,341 genes, 3,263 significant
+- Branch B: 1,489 drugs across 13 tissues, 19,357 correlation tests
+- Branch C: 17,189 genes, 215 significant, 72 colocalised, 25 high confidence;
+  identical high-confidence counts with and without the MHC region
+- Combined report built from all three branches
+
+Per-rule CPU, memory and runtime budgets were set from those runs and are
+documented in `workflows/rules/common.smk`.
+
 ### Notes
 
 - MAGMA is not redistributed. Its licence permits free academic use but

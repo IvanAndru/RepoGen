@@ -1156,9 +1156,9 @@ class TestDirectionalIntegration:
 
         with open(output_dir / "metadata.json") as fh:
             meta = json.load(fh)
-        assert "r3_provenance" in meta
-        assert meta["r3_provenance"]["xsum_seed"] == 42
-        assert meta["r3_provenance"]["permutation_calibration"]["enabled"] is False
+        assert "xsum_provenance" in meta
+        assert meta["xsum_provenance"]["xsum_seed"] == 42
+        assert meta["xsum_provenance"]["permutation_calibration"]["enabled"] is False
         assert not (output_dir / "calibration.json").exists()
 
     def test_calibration_sidecar_written_when_enabled(
