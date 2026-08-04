@@ -4,6 +4,24 @@ All notable changes to RepoGen are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-08-04
+
+### Fixed
+
+- The documented container pull command used the wrong tag. The git tag is
+  `v1.0.0`, but the published image tags drop the leading `v`, so
+  `docker://ghcr.io/ivanandru/repogen:v1.0.0` does not resolve. Use `1.0.0`.
+- Tests that read repository files resolved them against the working
+  directory, so the suite only passed when run from a checkout root. They now
+  resolve against the test file's location and pass from anywhere, including
+  from a writable directory alongside a read-only container image.
+
+### Added
+
+- Installation notes for running the image on a cluster: bind the filesystem
+  a symlinked scratch path points at, not just the symlink, and run from a
+  writable directory because Apptainer mounts images read-only.
+
 ## [1.0.0] - 2026-06-21
 
 First public release. RepoGen identifies drug repurposing candidates from GWAS
@@ -71,4 +89,5 @@ documented in `workflows/rules/common.smk`.
   which, and where to get them.
 - macOS is not supported; several external tools ship as Linux binaries only.
 
+[1.0.1]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.1
 [1.0.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.0
