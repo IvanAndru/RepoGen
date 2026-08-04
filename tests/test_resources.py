@@ -13,11 +13,19 @@ import yaml
 
 from repogen.data import resources as resources_mod
 from repogen.data.resources import (
+
     _POSTPROCESSORS,
     _resolve_dotted_path,
     generate_lincs_gene_info,
     setup_resources,
 )
+
+
+# Repository files are located relative to this test file, not the working
+# directory. Anchoring on __file__ lets the suite run from anywhere: from a
+# writable directory when the package is installed in a read-only container,
+# as well as from a checkout.
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestGenerateLincsGeneInfo:
@@ -659,7 +667,7 @@ class TestMagmaBinaryManifestContract:
 
     def test_manifest_entry_is_wired(self) -> None:
         manifest = yaml.safe_load(
-            Path("configs/resources.yaml").read_text(encoding="utf-8")
+            (REPO_ROOT / "configs/resources.yaml").read_text(encoding="utf-8")
         )
         spec = manifest["resources"]["magma_binary"]
         assert spec["postprocess"] == "extract_magma_binary"
@@ -668,19 +676,19 @@ class TestMagmaBinaryManifestContract:
         assert spec["url"].startswith("https://vu.data.surfsara.nl/")
 
     @pytest.mark.skipif(
-        not Path("envs/repogen.yaml").exists(),
+        not (REPO_ROOT / "envs/repogen.yaml").exists(),
         reason="envs/ is not shipped inside the image; repo checkout only",
     )
     def test_conda_env_does_not_declare_magma(self) -> None:
         """`magma` on conda-forge is the wrong software - it must stay out."""
-        env = yaml.safe_load(Path("envs/repogen.yaml").read_text(encoding="utf-8"))
+        env = yaml.safe_load((REPO_ROOT / "envs/repogen.yaml").read_text(encoding="utf-8"))
         deps = [d for d in env["dependencies"] if isinstance(d, str)]
         assert not any(d == "magma" or d.startswith("magma=") or d.startswith("magma>")
                        for d in deps)
 
 
 @pytest.mark.skipif(
-    not Path("envs/repogen.linux-64.lock").exists(),
+    not (REPO_ROOT / "envs/repogen.linux-64.lock").exists(),
     reason="envs/ is not shipped inside the image; repo checkout only",
 )
 class TestEnvironmentLockContract:
@@ -691,8 +699,8 @@ class TestEnvironmentLockContract:
     with; these checks catch the ways a lock file silently stops working.
     """
 
-    _LOCK = Path("envs/repogen.linux-64.lock")
-    _PIP = Path("envs/repogen-pip.linux-64.txt")
+    _LOCK = REPO_ROOT / "envs/repogen.linux-64.lock"
+    _PIP = REPO_ROOT / "envs/repogen-pip.linux-64.txt"
 
     def test_lock_file_exists_and_is_explicit(self) -> None:
         text = self._LOCK.read_text(encoding="utf-8")
@@ -739,7 +747,7 @@ class TestResourceUrlHygiene:
     pipeline. These checks pin the hosts that have already drifted once.
     """
 
-    _MANIFEST = Path("configs/resources.yaml")
+    _MANIFEST = REPO_ROOT / "configs/resources.yaml"
 
     def _resources(self) -> dict:
         return yaml.safe_load(self._MANIFEST.read_text(encoding="utf-8"))["resources"]
@@ -781,7 +789,7 @@ class TestBranchAwareResourceSelection:
     B and C unable to run.
     """
 
-    _MANIFEST = Path("configs/resources.yaml")
+    _MANIFEST = REPO_ROOT / "configs/resources.yaml"
 
     def _manifest(self) -> dict:
         return yaml.safe_load(self._MANIFEST.read_text(encoding="utf-8"))["resources"]

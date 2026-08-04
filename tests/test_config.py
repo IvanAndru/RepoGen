@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from repogen.config.loader import load_config
 from repogen.config.schema import (
+
     DrugEnrichmentConfig,
     GWASPrepConfig,
     MagmaConfig,
@@ -24,6 +25,13 @@ from repogen.utils.constants import BRAIN_TISSUES
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# Repository files are located relative to this test file, not the working
+# directory. Anchoring on __file__ lets the suite run from anywhere: from a
+# writable directory when the package is installed in a read-only container,
+# as well as from a checkout.
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _minimal_config() -> dict:
@@ -443,8 +451,8 @@ class TestClusterProfileContract:
     memory-heavy rules are killed.
     """
 
-    _PROFILE = Path("profiles/create/config.yaml")
-    _RULES = sorted(Path("workflows/rules").glob("*.smk"))
+    _PROFILE = REPO_ROOT / "profiles/create/config.yaml"
+    _RULES = sorted((REPO_ROOT / "workflows/rules").glob("*.smk"))
 
     def test_profile_exists_and_selects_slurm(self) -> None:
         cfg = yaml.safe_load(self._PROFILE.read_text(encoding="utf-8"))
@@ -480,11 +488,11 @@ class TestClusterProfileContract:
 
     def test_retired_cluster_yaml_is_gone(self) -> None:
         """configs/cluster.yaml targeted an interface Snakemake 8 removed."""
-        assert not Path("configs/cluster.yaml").exists()
+        assert not (REPO_ROOT / "configs/cluster.yaml").exists()
 
 
 @pytest.mark.skipif(
-    not Path("envs/Dockerfile").exists(),
+    not (REPO_ROOT / "envs/Dockerfile").exists(),
     reason="deployment files are not shipped inside the image; repo checkout only",
 )
 class TestContainerImageContract:
@@ -496,9 +504,9 @@ class TestContainerImageContract:
     in ~186 GB of data - are asserted here rather than discovered in CI.
     """
 
-    _DOCKERFILE = Path("envs/Dockerfile")
-    _IGNORE = Path(".dockerignore")
-    _CI = Path(".github/workflows/container.yml")
+    _DOCKERFILE = REPO_ROOT / "envs/Dockerfile"
+    _IGNORE = REPO_ROOT / ".dockerignore"
+    _CI = REPO_ROOT / ".github/workflows/container.yml"
 
     def test_base_image_is_pinned(self) -> None:
         text = self._DOCKERFILE.read_text(encoding="utf-8")

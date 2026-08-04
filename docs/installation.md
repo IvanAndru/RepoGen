@@ -42,14 +42,36 @@ out.
 A container image is built and published by CI on tagged releases:
 
 ```bash
-apptainer pull docker://ghcr.io/ivanandru/repogen:v1.0.0
-apptainer exec repogen_v1.0.0.sif repogen info
+apptainer pull docker://ghcr.io/ivanandru/repogen:1.0.0
+apptainer exec repogen_1.0.0.sif repogen info
 ```
+
+Note the tag has no leading `v`: the git tag is `v1.0.0`, but the published
+image tags are `1.0.0` and `1.0`.
 
 The image contains the Python environment and PLINK, but **not MAGMA**, whose
 licence forbids redistribution. Fetch MAGMA separately with
 `repogen setup-resources` and bind-mount the resource directory into the
-container.
+container; `repogen validate` will then report MAGMA from your resource
+directory and PLINK from inside the image.
+
+### Bind mounts on a cluster
+
+Apptainer only sees paths you bind. Two things catch people out:
+
+```bash
+apptainer exec --bind /scratch:/scratch --bind /cephfs:/cephfs \
+    repogen_1.0.0.sif \
+    repogen validate --config /scratch/me/repogen/config/config.yaml
+```
+
+- **Follow symlinks.** On CREATE, `/scratch/users/<id>` is a symlink into
+  `/cephfs/...`, so binding only `/scratch` leaves the real files invisible
+  and every path appears to be missing. Bind the target filesystem too.
+  `readlink -f` on your data directory will show you what that is.
+- **The image is read-only**, unlike a Docker container. Run from a writable
+  directory (`--pwd`) rather than from `/opt/repogen` inside the image, or
+  anything that writes will fail.
 
 Building the image yourself requires root, which HPC systems do not grant.
 Build with Docker on a machine you control, or use the CI-published image.
