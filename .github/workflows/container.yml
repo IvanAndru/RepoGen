@@ -4,25 +4,16 @@ name: Build container image
 #     apptainer pull docker://ghcr.io/<owner>/repogen:<version>
 # on any HPC system without building anything themselves.
 #
-# Tags trigger a published release image; pushes and pull requests build
-# without publishing, so a broken Dockerfile is caught before a release.
+# Tags trigger a published release image. Every pull request and every push
+# to main build the image and run the test suite inside it without
+# publishing, so a change that breaks the image or the suite is caught
+# before it is merged, not before a release.
 
 on:
   push:
     tags: ["v*"]
     branches: [main]
-    paths:
-      - "envs/Dockerfile"
-      - "envs/repogen.linux-64.lock"
-      - "envs/repogen-pip.linux-64.txt"
-      - "repogen/**"
-      - "workflows/**"
-      - ".github/workflows/container.yml"
   pull_request:
-    paths:
-      - "envs/Dockerfile"
-      - "envs/repogen.linux-64.lock"
-      - "envs/repogen-pip.linux-64.txt"
   workflow_dispatch:
 
 env:
