@@ -360,7 +360,7 @@ class TestLoadConfig:
 
     def test_invalid_yaml_bare_list_raises(self, tmp_path: Path) -> None:
         f = tmp_path / "bad.yaml"
-        f.write_text("- item1\n- item2\n")
+        f.write_text("- alpha\n- beta\n")
         with pytest.raises(ValueError, match="YAML mapping"):
             load_config(f)
 

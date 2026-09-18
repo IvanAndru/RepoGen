@@ -57,7 +57,7 @@ def _clamp_log10(series: pd.Series) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Pathway enrichment (§6.2)
+# Pathway enrichment
 # ---------------------------------------------------------------------------
 
 def plot_pathway_enrichment(
@@ -161,7 +161,7 @@ def plot_pathway_enrichment(
 
 
 # ---------------------------------------------------------------------------
-# Drug enrichment (§6.3)
+# Drug enrichment
 # ---------------------------------------------------------------------------
 
 def plot_drug_enrichment(
@@ -325,7 +325,7 @@ def plot_drug_enrichment(
 
 
 # ---------------------------------------------------------------------------
-# ATC enrichment -- forest-style (§6.4)
+# ATC enrichment -- forest-style
 # ---------------------------------------------------------------------------
 
 def plot_atc_enrichment(

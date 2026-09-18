@@ -291,8 +291,8 @@ class TestDSigDBPostprocessorRegistration:
         assert callable(_POSTPROCESSORS["extract_dsigdb_d3"])
 
     def test_function_name_mirrors_token(self) -> None:
-        # Convention check (matches _postprocess_plink_zip ↔
-        # "extract_plink_zip" and _postprocess_repurposing_hub ↔
+        # Convention check (_postprocess_plink_zip matches
+        # "extract_plink_zip" and _postprocess_repurposing_hub matches
         # "repurposing_hub_tsv_to_csv").  Helps grep-ability when
         # debugging postprocess failures from logs.
         assert hasattr(resources_mod, "_postprocess_extract_dsigdb_d3")
@@ -429,7 +429,7 @@ class TestNcbi38GeneLocManifestContract:
     direct ZIP download from the official MAGMA SURF mirror, post-processed
     by ``extract_ncbi38_gene_loc``.  A silent revert to (e.g.) the dead
     CTG redirect would degrade Branch B back to the GRCh37 projection
-    fallback - same situation as before R1.  This test locks the entry's
+    fallback, as it was before the entry was fixed.  This test locks the entry's
     URL host, checksum format, postprocess token, and the
     backwards-compatibility guarantee that the GRCh37 entry is preserved.
     """
@@ -460,7 +460,7 @@ class TestNcbi38GeneLocManifestContract:
         # The official MAGMA distribution page (https://cncr.nl/research/magma/)
         # links to the SURF Nextcloud-hosted ZIP at vu.data.surf.nl.  The
         # historic CTG URL (https://ctg.cncr.nl/software/MAGMA/aux_files/NCBI38.zip)
-        # is dead and redirects to HTML - verified empirically R1 v4.
+        # is dead and redirects to HTML, as verified when the entry was fixed.
         url = grch38_entry.get("url", "")
         assert "vu.data.surf.nl" in url, (
             f"URL must point at the SURF mirror linked from the official "
@@ -470,7 +470,7 @@ class TestNcbi38GeneLocManifestContract:
     def test_checksum_is_sha256_of_raw_zip(self, grch38_entry: dict) -> None:
         # When ``postprocess`` is set, ``setup_resources`` verifies the
         # checksum against the *downloaded* archive, not the extracted
-        # member.  The raw ZIP SHA256 below was captured at R1 v4 and
+        # member.  The raw ZIP SHA256 below was captured when the entry was fixed and
         # surfaces upstream drift loudly via ``checksum_mismatch``.
         checksum = grch38_entry.get("checksum", "")
         assert checksum == (
@@ -495,7 +495,7 @@ class TestNcbi38GeneLocManifestContract:
         )
 
     def test_grch37_entry_preserved(self, manifest: dict) -> None:
-        # R1 must not break Branch A - the GRCh37 entry stays as-is.
+        # The GRCh38 fix must not break Branch A - the GRCh37 entry stays as-is.
         ncbi37 = manifest.get("resources", {}).get("ncbi_gene_loc")
         assert ncbi37 is not None, (
             "ncbi_gene_loc (GRCh37) missing - Branch A MAGMA would break."
@@ -555,7 +555,7 @@ class TestNcbi38GeneLocPostprocessor:
             _POSTPROCESSORS["extract_ncbi38_gene_loc"](raw, final)
 
     def test_raises_when_not_a_zip(self, tmp_path: Path) -> None:
-        # Pre-R1 the CTG URL returned HTML - guard against that recurring.
+        # The old CTG URL returned HTML - guard against that recurring.
         raw = tmp_path / "html_page.zip"
         raw.write_text("<!DOCTYPE html><html><body>404</body></html>")
         final = tmp_path / "out.gene.loc"

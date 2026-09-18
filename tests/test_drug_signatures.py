@@ -511,7 +511,7 @@ class TestNameCollisionDedup:
 # ---------------------------------------------------------------------------
 
 
-def _r4_profiles(cell_lines: list[str], n_genes: int = 20, seed: int = 42) -> list[dict]:
+def _synthetic_profiles(cell_lines: list[str], n_genes: int = 20, seed: int = 42) -> list[dict]:
     """Build a synthetic profile list with deterministic z-vectors.
 
     Each profile's z-vector is ``[i + 0.1 * j for j in range(n_genes)]``
@@ -732,7 +732,7 @@ class TestCompositionCounts:
         )
 
     def test_composition_columns_present_in_signature_records(self) -> None:
-        """After _build_signature_records, all 8 R4 composition columns exist."""
+        """After _build_signature_records, all 8 cell-line composition columns exist."""
         prof_list = [
             {"z_scores": np.zeros(5, dtype=np.float32), "cell_line": "NPC",  "dose": "d", "time": "t"},
             {"z_scores": np.zeros(5, dtype=np.float32), "cell_line": "MCF7", "dose": "d", "time": "t"},
@@ -750,12 +750,12 @@ class TestCompositionCounts:
             "match_confidence": ["inchikey"],
         })
         records = _build_signature_records(signatures, matched, gene_ids=list(range(5)))
-        expected_r4_cols = {
+        expected_composition_cols = {
             "n_profiles_total", "n_profiles_neural", "n_profiles_non_neural",
             "n_profiles_unknown_cell_line", "neural_fraction",
             "neural_weight_fraction", "cell_line_weighting_mode", "neural_weight",
         }
-        assert expected_r4_cols.issubset(set(records.columns))
+        assert expected_composition_cols.issubset(set(records.columns))
         row = records.iloc[0]
         assert row["cell_line_weighting_mode"] == "neural_priority"
         assert row["neural_weight"] == 3.0
@@ -799,9 +799,9 @@ class TestCompositionCounts:
 class TestAggregationModes:
     """Mode-switch aggregation semantics."""
 
-    def test_uniform_mode_byte_identical_to_pre_r4(self) -> None:
-        """R4 primary backward-compat lock: uniform mode reproduces pre-R4
-        aggregation exactly.  Compare against a direct np.nanmedian on the
+    def test_uniform_mode_byte_identical_to_plain_median(self) -> None:
+        """Uniform mode reproduces the aggregation used before cell-line weighting
+        exactly.  Compare against a direct np.nanmedian on the
         raw profile z-matrix.
         """
         rng = np.random.default_rng(7)

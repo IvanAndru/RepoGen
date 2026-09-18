@@ -890,7 +890,7 @@ def _build_chembl_mini_db(tmp_path: Path) -> Path:
               " '5-HT2A antagonist', 'ANTAGONIST', 1)")
     c.execute("INSERT INTO drug_mechanism VALUES (121, 121,"
               " '5-HT2A antagonist', 'ANTAGONIST', 1)")
-    # Direct ATC on the parent (Item-1 already pushes it to the salt
+    # Direct ATC on the parent (ATC propagation already pushes it to the salt
     # via parent-resolved ATC; canonicalization collapses the IDs themselves).
     c.execute("INSERT INTO molecule_atc_classification VALUES (121, 'N06AA09')")
     c.execute("INSERT INTO atc_classification VALUES ('N06AA09',"
@@ -1728,7 +1728,7 @@ class TestMergeSourcesIntegration:
 
     def test_no_index_no_op_preserves_behavior(self, tmp_path: Path) -> None:
         # When chembl_name_index is None, DGIdb remapping and ATC
-        # propagation do nothing; matched-pre-Item-2 behavior intact.
+        # propagation do nothing; the plain matching behaviour is intact.
         chembl_df = pd.DataFrame({
             "drug_chembl_id": ["CHEMBL10"],
             "drug_name": ["drug_A"],
@@ -2101,7 +2101,7 @@ class TestChemblNameIndexParentMaps:
         self, tmp_path: Path,
     ) -> None:
         # CHEMBL20 is a salt of CHEMBL30 (per the existing fixture).
-        # Both must end up in parent_chembl_id_of_cid post-Item-5.
+        # Both must end up in parent_chembl_id_of_cid.
         db = _build_chembl_mini_db(tmp_path)
         index = load_chembl_synonym_index(db)
         assert index.parent_chembl_id_of_cid["CHEMBL20"] == "CHEMBL30"
@@ -2299,7 +2299,7 @@ class TestCanonicalizeToParentChemblId:
 
     def test_empty_parent_map_passthrough(self) -> None:
         # If the index has an empty parent map (e.g. older index
-        # without Item-5 fields), the helper is a no-op rather than
+        # without parent-map fields), the helper is a no-op rather than
         # corrupting drug_chembl_id values.
         index = self._make_index_with_parent_map({})
         df = pd.DataFrame({
@@ -2374,7 +2374,7 @@ class TestParentSaltUnificationIntegration:
         )
         # Salt collapsed onto parent; one row per (drug, gene).
         assert merged["drug_chembl_id"].tolist() == ["CHEMBL121"]
-        # ATC from the parent is preserved (Item-1 + dedup interplay).
+        # ATC from the parent is preserved (ATC propagation and dedup interplay).
         atc = merged["atc_codes"].iloc[0]
         atc_list = list(atc) if atc is not None else []
         assert "N06AA09" in atc_list
@@ -2469,7 +2469,7 @@ class TestParentSaltUnificationIntegration:
 
     def test_single_source_dgidb_no_chembl_index_no_op(self) -> None:
         # Single-source DGIdb (no chembl, no index): canonicalization
-        # is gated off; behavior matches pre-Item-5 single-source
+        # is gated off; behaviour matches the plain single-source
         # path (placeholder ID preserved, transient column stripped,
         # row count unchanged).
         df = pd.DataFrame({
@@ -2515,7 +2515,7 @@ class TestTokenisedConfidenceUpgrade:
 
     Critical-criteria checks:
       * Existing target-only ≥2 source agreement still upgrades
-        (regression guard for the pre-Item-11 behaviour).
+        (regression guard for the target-only behaviour).
       * Compound source tokens (``"chembl,dgidb"``) - created by an
         earlier dedup pass - are tokenised correctly.
       * Mixed target+expression evidence does NOT upgrade.

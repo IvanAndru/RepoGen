@@ -390,7 +390,7 @@ DISEASE_SIGNATURE_META_OPTIONAL: dict[str, type] = {
 
 
 # ---------------------------------------------------------------------------
-# Schema 8: NegativeCorrelationResult (per tissue–drug pair)
+# Schema 8: NegativeCorrelationResult (per tissue-drug pair)
 # ---------------------------------------------------------------------------
 
 

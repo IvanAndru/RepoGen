@@ -619,7 +619,7 @@ def _run_correlation_loop(
 
 
 # ---------------------------------------------------------------------------
-# Phase C–D: FDR correction and cross-tissue aggregation
+# Phase C-D: FDR correction and cross-tissue aggregation
 # ---------------------------------------------------------------------------
 
 
@@ -1338,7 +1338,7 @@ def run_negative_correlation(
     # sidecar atomically AFTER primary parquets + metadata.  The calibration
     # payload was computed in memory before any disk state was written
     # (Phase E) so *compute* failure aborts the run without leaving partial
-    # outputs.  Round-4 additionally closes the *write*-failure hole: if
+    # outputs.  The rollback below closes the *write*-failure hole as well: if
     # ``_atomic_write_json`` raises here, we roll back every file this
     # invocation wrote before re-raising, so the user never sees a
     # "complete-looking" primary output for a run whose requested
