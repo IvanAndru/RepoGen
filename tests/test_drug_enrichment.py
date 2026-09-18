@@ -1673,13 +1673,13 @@ class TestHeadlineDrugPool:
         sets_legacy, _ = build_drug_gene_sets(
             drug_targets_df, gene_results_df, min_genes_per_drug=3,
         )
-        sets_item7, _ = build_drug_gene_sets(
+        sets_two_tier, _ = build_drug_gene_sets(
             drug_targets_df, gene_results_df,
             min_genes_per_drug=3, atc_min_genes_per_drug=None,
         )
-        assert set(sets_legacy.keys()) == set(sets_item7.keys())
+        assert set(sets_legacy.keys()) == set(sets_two_tier.keys())
         for k in sets_legacy:
-            assert sets_legacy[k] == sets_item7[k]
+            assert sets_legacy[k] == sets_two_tier[k]
 
     def test_build_drug_gene_sets_atc_lt_headline_includes_smaller_drugs(
         self, gene_results_df: pd.DataFrame, drug_targets_df: pd.DataFrame,
@@ -1689,16 +1689,16 @@ class TestHeadlineDrugPool:
         sets_legacy, stats_legacy = build_drug_gene_sets(
             drug_targets_df, gene_results_df, min_genes_per_drug=3,
         )
-        sets_item7, stats_item7 = build_drug_gene_sets(
+        sets_two_tier, stats_two_tier = build_drug_gene_sets(
             drug_targets_df, gene_results_df,
             min_genes_per_drug=3, atc_min_genes_per_drug=1,
         )
         assert "CHEMBL_C" not in sets_legacy
-        assert "CHEMBL_C" in sets_item7
-        assert stats_item7["n_drugs_in_atc_pool"] >= stats_legacy["n_drugs_tested"]
-        assert stats_item7["n_drugs_in_headline_pool"] == stats_legacy["n_drugs_tested"]
-        assert stats_item7["atc_min_genes_per_drug"] == 1
-        assert stats_item7["headline_min_genes_per_drug"] == 3
+        assert "CHEMBL_C" in sets_two_tier
+        assert stats_two_tier["n_drugs_in_atc_pool"] >= stats_legacy["n_drugs_tested"]
+        assert stats_two_tier["n_drugs_in_headline_pool"] == stats_legacy["n_drugs_tested"]
+        assert stats_two_tier["atc_min_genes_per_drug"] == 1
+        assert stats_two_tier["headline_min_genes_per_drug"] == 3
 
     def test_build_drug_gene_sets_filter_stats_keys(
         self, gene_results_df: pd.DataFrame, drug_targets_df: pd.DataFrame,
@@ -1808,7 +1808,7 @@ class TestHeadlineDrugPool:
 
         for run_label, kwargs in (
             ("legacy", {"min_genes_per_drug": 3}),
-            ("item7_inherit", {"min_genes_per_drug": 3, "atc_min_genes_per_drug": None}),
+            ("two_tier_inherit", {"min_genes_per_drug": 3, "atc_min_genes_per_drug": None}),
         ):
             de_dir = tmp_path / f"out_{run_label}" / "drug_enrichment"
             de_dir.mkdir(parents=True, exist_ok=True)
@@ -1833,12 +1833,12 @@ class TestHeadlineDrugPool:
             globals()[f"_results_{run_label}"] = results
 
         legacy = globals()["_results_legacy"].sort_values("drug_chembl_id").reset_index(drop=True)
-        item7 = globals()["_results_item7_inherit"].sort_values("drug_chembl_id").reset_index(drop=True)
-        assert list(legacy["drug_chembl_id"]) == list(item7["drug_chembl_id"])
+        two_tier = globals()["_results_two_tier_inherit"].sort_values("drug_chembl_id").reset_index(drop=True)
+        assert list(legacy["drug_chembl_id"]) == list(two_tier["drug_chembl_id"])
         assert legacy["passes_headline_min_genes"].all()
-        assert item7["passes_headline_min_genes"].all()
+        assert two_tier["passes_headline_min_genes"].all()
         np.testing.assert_array_almost_equal(
-            legacy["magma_fdr_q"].values, item7["magma_fdr_q"].values, decimal=12,
+            legacy["magma_fdr_q"].values, two_tier["magma_fdr_q"].values, decimal=12,
         )
 
     @patch("repogen.analysis.drug_enrichment._get_magma_version", return_value="v1.10")
@@ -2041,7 +2041,7 @@ class TestHeadlineExportFiltering:
         assert list(out["drug_chembl_id"]) == ["A", "B"]
 
     def test_filter_to_headline_idempotent_on_legacy_parquet(self) -> None:
-        """Legacy parquet (pre-Item-7) lacks the flag column - return unchanged."""
+        """A legacy parquet without the flag column is returned unchanged."""
         from repogen.reporting.export import _filter_to_headline
         df = self._make_de_df().drop(columns=["passes_headline_min_genes"])
         out = _filter_to_headline(df)

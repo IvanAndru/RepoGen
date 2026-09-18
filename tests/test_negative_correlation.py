@@ -933,13 +933,13 @@ def _make_fdr_fixture_df() -> pd.DataFrame:
 class TestDirectionalFDR:
     """FDR columns and byte-identity lock on fdr_global."""
 
-    def test_fdr_global_byte_identical_to_pre_r3_logic(self) -> None:
+    def test_fdr_global_byte_identical_to_plain_bh(self) -> None:
         df = _make_fdr_fixture_df()
-        _, pre_r3_q, _, _ = multipletests(
+        _, plain_bh_q, _, _ = multipletests(
             df["spearman_pvalue"].values, method="fdr_bh",
         )
         result = _apply_fdr_and_aggregate(df.copy(), 0.05)
-        np.testing.assert_array_equal(result["fdr_global"].values, pre_r3_q)
+        np.testing.assert_array_equal(result["fdr_global"].values, plain_bh_q)
 
     def test_directional_fdr_global_matches_multipletests(self) -> None:
         df = _make_fdr_fixture_df()
@@ -1027,7 +1027,7 @@ class TestDirectionalSummary:
         assert "best_directional_pvalue" in summary.columns
         assert "best_directional_fdr_per_tissue" in summary.columns
 
-        # Pre-R3 columns unchanged
+        # Columns that predate the directional track are unchanged
         assert "n_tissues_fdr_significant" in summary.columns
         assert "n_tissues_nominal" in summary.columns
         assert "best_spearman_rho" in summary.columns
@@ -1082,7 +1082,7 @@ class TestLambdaGc:
 
 
 class TestXsumSeedBackwardCompat:
-    """xsum_seed=42 preserves pre-R3 byte-for-byte behaviour."""
+    """The default xsum_seed=42 reproduces the original byte-for-byte behaviour."""
 
     def test_default_seed_is_deterministic(self) -> None:
         disease = {i: float(i) for i in range(1000, 1020)}
@@ -1111,9 +1111,9 @@ class TestCalibrationConfigDefaults:
 
 
 class TestDirectionalIntegration:
-    """End-to-end R3 integration against the synthetic fixture."""
+    """End-to-end directional-track integration against the synthetic fixture."""
 
-    def test_r3_columns_present_in_parquet(
+    def test_directional_columns_present_in_parquet(
         self, tmp_path, synthetic_disease_signature,
         synthetic_drug_signatures, synthetic_drug_targets,
         synthetic_lincs_gene_info, minimal_pipeline_config,
@@ -1393,9 +1393,9 @@ class TestCompositionPropagation:
         synthetic_drug_signatures, synthetic_drug_targets,
         synthetic_lincs_gene_info,
     ) -> None:
-        # Extend the shared synthetic_drug_signatures fixture with R4
+        # Extend the shared synthetic_drug_signatures fixture with the
         # composition columns (as if extract_drug_signatures had written
-        # them in a real R4 run).
+        # them in a real run).
         drug_sigs = synthetic_drug_signatures.copy()
         n = len(drug_sigs)
         drug_sigs["n_profiles_total"] = [5] * n
@@ -1435,17 +1435,17 @@ class TestCompositionPropagation:
 
         per_tissue = pd.read_parquet(output_dir / "per_tissue_results.parquet")
         summary = pd.read_parquet(output_dir / "drug_summary.parquet")
-        expected_r4_cols = {
+        expected_composition_cols = {
             "n_profiles_total", "n_profiles_neural", "neural_fraction",
             "neural_weight_fraction", "cell_line_weighting_mode",
         }
-        assert expected_r4_cols.issubset(set(per_tissue.columns)), (
-            f"Missing R4 columns from per_tissue_results: "
-            f"{expected_r4_cols - set(per_tissue.columns)}"
+        assert expected_composition_cols.issubset(set(per_tissue.columns)), (
+            f"Missing composition columns from per_tissue_results: "
+            f"{expected_composition_cols - set(per_tissue.columns)}"
         )
-        assert expected_r4_cols.issubset(set(summary.columns)), (
-            f"Missing R4 columns from drug_summary: "
-            f"{expected_r4_cols - set(summary.columns)}"
+        assert expected_composition_cols.issubset(set(summary.columns)), (
+            f"Missing composition columns from drug_summary: "
+            f"{expected_composition_cols - set(summary.columns)}"
         )
         # Spot-check a value round-tripped correctly for one drug.
         row = per_tissue[per_tissue["lincs_pert_id"] == "BRD-K00000000"].iloc[0]
@@ -1453,12 +1453,12 @@ class TestCompositionPropagation:
         assert row["neural_fraction"] == pytest.approx(0.2)
         assert row["cell_line_weighting_mode"] == "neural_priority"
 
-    def test_backward_compat_pre_r4_drug_signatures_still_produce_valid_nc(
+    def test_backward_compat_signatures_without_composition_still_produce_valid_nc(
         self, tmp_path, synthetic_disease_signature,
         synthetic_drug_signatures, synthetic_drug_targets,
         synthetic_lincs_gene_info,
     ) -> None:
-        """Archived drug_signatures.parquet files without R4 composition
+        """Archived drug_signatures.parquet files without the composition
         columns must still produce a valid negative-correlation output
         (columns present as NaN, no crash).
         """
@@ -1474,10 +1474,10 @@ class TestCompositionPropagation:
         disease_path = tmp_path / "disease.parquet"
         drug_sig_path = tmp_path / "drug_sigs.parquet"
         drug_targets_path = tmp_path / "drug_targets.parquet"
-        output_dir = tmp_path / "output_r4_bc"
+        output_dir = tmp_path / "output_bc"
 
         synthetic_disease_signature.to_parquet(disease_path)
-        # Note: synthetic_drug_signatures fixture does NOT include R4 columns.
+        # Note: synthetic_drug_signatures fixture does NOT include composition columns.
         synthetic_drug_signatures.to_parquet(drug_sig_path)
         synthetic_drug_targets.to_parquet(drug_targets_path)
 
@@ -1489,7 +1489,7 @@ class TestCompositionPropagation:
             output_dir=output_dir,
         )
         per_tissue = pd.read_parquet(output_dir / "per_tissue_results.parquet")
-        # R4 columns should be present (populated as NaN because upstream
+        # Composition columns should be present (populated as NaN because upstream
         # did not supply them).
         for col in ("n_profiles_total", "n_profiles_neural", "neural_fraction",
                     "neural_weight_fraction", "cell_line_weighting_mode"):

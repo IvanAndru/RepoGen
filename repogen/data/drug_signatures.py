@@ -625,9 +625,9 @@ def _parse_gctx_col_id(col_id: str) -> dict[str, str]:
 
     Known LINCS Level 5 column ID formats:
 
-    * **3-token** (dominant): ``EXP_CELLLINE_NNH:BRD-xxx:DOSE``
+    * 3-token (dominant): ``EXP_CELLLINE_NNH:BRD-xxx:DOSE``
       - time is embedded in the prefix suffix (e.g. ``24H``).
-    * **4-token** (minority): ``EXP_CELLLINE_XH:BRD-xxx:DOSE:TIME``
+    * 4-token (minority): ``EXP_CELLLINE_XH:BRD-xxx:DOSE:TIME``
       - time is the fourth colon-separated token.
 
     The ``pert_id`` field is normalized to the 2-segment compound

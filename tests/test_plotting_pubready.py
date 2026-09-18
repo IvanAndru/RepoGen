@@ -1,7 +1,7 @@
-"""Publication-readiness regression tests for Branch A plots (§8.1).
+"""Publication-readiness regression tests for Branch A plots.
 
-Do NOT modify existing test_plotting.py asserts - this file adds
-new targeted contract/behaviour tests.
+These complement test_plotting.py, which covers rendering, with
+targeted contract and behaviour checks.
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def pathway_results_with_beta():
 
 
 # ---------------------------------------------------------------------------
-# §1 Config tests
+# Config tests
 # ---------------------------------------------------------------------------
 
 class TestPlotStyleConfig:
@@ -191,7 +191,7 @@ class TestPlotStyleConfig:
 
 
 # ---------------------------------------------------------------------------
-# §2 Base helper tests
+# Base helper tests
 # ---------------------------------------------------------------------------
 
 class TestSaveFigure:
@@ -272,7 +272,7 @@ class TestHelpers:
 
 
 # ---------------------------------------------------------------------------
-# §3 Manhattan tests
+# Manhattan tests
 # ---------------------------------------------------------------------------
 
 class TestManhattan:
@@ -313,7 +313,7 @@ class TestManhattan:
 
 
 # ---------------------------------------------------------------------------
-# §4 QQ tests
+# QQ tests
 # ---------------------------------------------------------------------------
 
 class TestQQ:
@@ -354,7 +354,7 @@ class TestQQ:
 
 
 # ---------------------------------------------------------------------------
-# §5 Volcano tests
+# Volcano tests
 # ---------------------------------------------------------------------------
 
 class TestVolcano:
@@ -388,7 +388,7 @@ class TestVolcano:
 
 
 # ---------------------------------------------------------------------------
-# §6 Enrichment tests
+# Enrichment tests
 # ---------------------------------------------------------------------------
 
 class TestDrugEnrichment:
@@ -447,7 +447,7 @@ class TestATCForest:
 
 
 # ---------------------------------------------------------------------------
-# §8.2 Golden images - opt-in only
+# Golden images - opt-in only
 # ---------------------------------------------------------------------------
 
 GOLDEN = os.environ.get("REPOGEN_GOLDEN") == "1"

@@ -1038,8 +1038,8 @@ def _build_chembl_synonym_index(
     cand_syn, res_syn = _build_tier(syn, "synonyms")
     cand_who, res_who = _build_tier(who, "who_name")
 
-    # Reuse the Item-1 helper to populate the drug-level annotation
-    # dicts, so the index ships with everything
+    # Populate the drug-level annotation dicts with the shared helper, so
+    # the index ships with everything
     # ``_propagate_chembl_atc_to_remapped`` needs.
     chembl_to_atc, chembl_to_ind = _build_chembl_annotation_dicts(conn)
 

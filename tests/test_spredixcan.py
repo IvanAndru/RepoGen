@@ -1596,7 +1596,7 @@ class TestAddMHCFlagBuildAware:
         assert add_mhc_flag(df, ann, build="GRCh37").loc[0, "mhc_flag"] == True
 
     def test_grch37_legacy_call_preserves_old_behaviour(self) -> None:
-        # Pre-R1 test fixture: chr6:29M HLA-A coords falls inside the
+        # Original test fixture: chr6:29M HLA-A coords falls inside the
         # GRCh37 interval as well.  Behaviour preserved.
         df = pd.DataFrame({
             "gene_ensembl_id": ["ENSG_HLA", "ENSG_OFF"],

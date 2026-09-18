@@ -83,7 +83,7 @@ drug_enrichment:
                                      #   pair with min_pchembl/max_phase_filter for practical runs)
   enable_expression_enrichment: false  # opt-in expression-perturbation evidence
                                        # for Branch-A enrichment.  When false (default), pipeline runs
-                                       # TARGETS-only (byte-identical to pre-Item-11).  When true,
+                                       # TARGETS-only, exactly as before this option existed.  When true,
                                        # an additional 'load_drug_targets_expr' loader produces
                                        # drug_targets_expr.parquet that drug_enrichment consumes;
                                        # Branch B / Branch C continue to read drug_targets.parquet

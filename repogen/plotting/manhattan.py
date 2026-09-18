@@ -73,7 +73,7 @@ def _validate_columns(df: pd.DataFrame, required: set[str], name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Manhattan plot (§3)
+# Manhattan plot
 # ---------------------------------------------------------------------------
 
 def plot_manhattan(
@@ -331,7 +331,7 @@ def plot_manhattan(
 
 
 # ---------------------------------------------------------------------------
-# Gene volcano - simple variant (supplement, §5.1)
+# Gene volcano - simple variant (supplement)
 # ---------------------------------------------------------------------------
 
 def plot_gene_volcano_simple(
@@ -384,7 +384,7 @@ def plot_gene_volcano_simple(
 
 
 # ---------------------------------------------------------------------------
-# Gene volcano - publication variant (§5.2–5.9)
+# Gene volcano - publication variant
 # ---------------------------------------------------------------------------
 
 def plot_gene_volcano(

@@ -78,8 +78,8 @@ class GeneIDConverter:
             self._load_gene_history(Path(gene_history_file))
 
         logger.info(
-            "GeneIDConverter ready: %d Ensembl↔Symbol, %d UniProt↔Ensembl, "
-            "%d Symbol↔Entrez, %d deprecated IDs tracked",
+            "GeneIDConverter ready: %d Ensembl-Symbol, %d UniProt-Ensembl, "
+            "%d Symbol-Entrez, %d deprecated IDs tracked",
             len(self._ensembl_to_symbol),
             len(self._uniprot_to_ensembl),
             len(self._symbol_to_entrez),
@@ -132,7 +132,7 @@ class GeneIDConverter:
         return mapping
 
     def _load_ncbi_gene_info(self, path: Path) -> None:
-        """Load NCBI gene_info.gz to build Entrez↔Symbol↔Ensembl maps.
+        """Load NCBI gene_info.gz to build Entrez, Symbol and Ensembl maps.
 
         Expected columns (tab-separated, ``#`` header):
         ``#tax_id  GeneID  Symbol  ...  dbXrefs  ...``

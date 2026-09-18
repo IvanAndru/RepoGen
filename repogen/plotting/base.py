@@ -367,7 +367,7 @@ def chromosome_colors(n_chr: int = 22) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Publication helper functions (§2.4)
+# Publication helper functions
 # ---------------------------------------------------------------------------
 
 def render_threshold_line(

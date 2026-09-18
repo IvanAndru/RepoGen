@@ -614,7 +614,7 @@ class PermutationCalibrationConfig(BaseModel):
     Produces ``negative_correlation/calibration.json`` as a diagnostic
     sidecar reporting genomic-control-style lambda (chi²_1-based, per
     Devlin & Roeder 1999) and a secondary -log10(p) ratio heuristic.
-    **Does not modify ``per_tissue_results.parquet`` primary p-values**.
+    It does not modify the primary p-values in ``per_tissue_results.parquet``.
     Off by default for backward compatibility.
 
     Scale note: ``n_permutations=100`` is a *diagnostic* scale
@@ -783,7 +783,7 @@ class EQTLSourceConfig(BaseModel):
 
 
 class MRDrugMatchConfig(BaseModel):
-    """Branch C drug-matching filters and gene↔drug ID-join strategy.
+    """Branch C drug-matching filters and gene-to-drug ID-join strategy.
 
     Every default reproduces the previous output: a legacy exact-Ensembl->loose-symbol
     join with no phase/potency/druggability filtering and all interaction types
@@ -793,7 +793,7 @@ class MRDrugMatchConfig(BaseModel):
     match_mode: Literal["legacy", "strict"] = Field(
         default="legacy",
         description=(
-            "Gene↔drug ID join strategy. 'legacy' = exact Ensembl then a loose "
+            "Gene-to-drug ID join strategy. 'legacy' = exact Ensembl then a loose "
             "gene_symbol fallback (previous behaviour). 'strict' = exact Ensembl "
             "(version-stripped) -> Entrez -> UniProt -> unambiguous symbol (flagged "
             "and demoted); distinct Ensembl IDs are never merged by shared symbol."

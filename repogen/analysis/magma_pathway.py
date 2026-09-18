@@ -94,7 +94,7 @@ def create_geneset_file(
     if n_dropped > 0:
         logger.info(
             "Gene-set size filter: %d of %d sets dropped "
-            "(outside %d–%d mapped genes)",
+            "(outside %d-%d mapped genes)",
             n_dropped,
             len(mapped),
             min_set_size,
@@ -104,7 +104,7 @@ def create_geneset_file(
     if filtered.empty:
         raise RuntimeError(
             f"All {len(mapped)} gene sets were empty or outside size range "
-            f"({min_set_size}–{max_set_size}) after mapping symbols to "
+            f"({min_set_size}-{max_set_size}) after mapping symbols to "
             "Entrez IDs. Check that gene_results_df has gene_symbol column "
             "and that gene set symbols match."
         )
@@ -116,7 +116,7 @@ def create_geneset_file(
             fh.write(line + "\n")
 
     logger.info(
-        "MAGMA gene-set file: %d sets written (%d–%d genes each) -> %s",
+        "MAGMA gene-set file: %d sets written (%d-%d genes each) -> %s",
         len(filtered),
         filtered["n_genes_mapped"].min(),
         filtered["n_genes_mapped"].max(),
