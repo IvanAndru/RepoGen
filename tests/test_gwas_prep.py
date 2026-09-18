@@ -1427,6 +1427,27 @@ class TestCaseControlMetadataPropagation:
         assert meta.case_control_n_source == "gwas_column_median"
         assert meta.population_prevalence is None
 
+    def test_varying_column_n_uses_the_median(self, tmp_path: Path) -> None:
+        """Per-variant N that differs between rows is reduced to its median."""
+        f = tmp_path / "cc_varying.txt"
+        lines = ["SNP\tCHR\tBP\tA1\tA2\tBETA\tSE\tP\tN_CAS\tN_CON"]
+        for i in range(1, 11):
+            lines.append(
+                f"rs{i}\t{(i % 22) + 1}\t{i * 10000}\tA\tG\t"
+                f"0.05\t0.01\t{min(i * 0.003, 0.999)}\t{10000 + 10 * i}\t{40000 - 10 * i}"
+            )
+        f.write_text("\n".join(lines) + "\n")
+        df, meta = prepare_gwas(
+            input_path=f,
+            genome_build="GRCh37",
+            trait_type="case_control",
+        )
+        assert meta.case_control_n_source == "gwas_column_median"
+        assert meta.n_cases == int(round(df["N_CAS"].median()))
+        assert meta.n_controls == int(round(df["N_CON"].median()))
+        assert 10010 <= meta.n_cases <= 10100
+        assert 39900 <= meta.n_controls <= 39990
+
     def test_quantitative_no_case_control_n(self, tmp_path: Path) -> None:
         f = tmp_path / "pgc.txt"
         _write_pgc_gwas(f)  # only N column
