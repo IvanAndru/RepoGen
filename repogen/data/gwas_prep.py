@@ -784,7 +784,7 @@ def _resolve_case_control_n(
         if lo != hi:
             logger.info(
                 "%s varies per variant (min=%d, max=%d); using median=%d as the "
-                "scalar case/control N.", col, lo, hi, int(round(vals.median)),
+                "scalar case/control N.", col, lo, hi, int(round(vals.median())),
             )
         return int(round(vals.median()))
 
