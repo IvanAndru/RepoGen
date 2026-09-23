@@ -183,9 +183,71 @@ def ensure_ref_freq(bfile_full_path: Path, plink_binary: Path) -> Path:
     return frq_path
 
 
+_SPLIT_CHROMOSOMES = tuple(range(1, 23))
+
+
+def _chromosome_bfile(bfile_full_path: Path, chrom: object) -> Path | None:
+    """Per-chromosome copy of the reference panel, if ``ensure_ref_split`` made one."""
+    if not isinstance(chrom, (int, np.integer)) or int(chrom) not in _SPLIT_CHROMOSOMES:
+        return None
+    prefix = Path(f"{bfile_full_path}.chr{int(chrom)}")
+    if all(Path(f"{prefix}{ext}").exists() for ext in (".bed", ".bim", ".fam")):
+        return prefix
+    return None
+
+
+def ensure_ref_split(bfile_full_path: Path, plink_binary: Path) -> None:
+    """Write one PLINK fileset per autosome beside the reference panel, once.
+
+    PLINK parses the whole ``.bim`` on every call, and clumping calls it once
+    per gene; with a per-chromosome fileset each call reads one chromosome.
+    Variant order and allele coding are kept (``--keep-allele-order``), so
+    clumping results are unchanged. Each fileset is written under a
+    temporary name and renamed into place, so a partial write is never used.
+    """
+    for chrom in _SPLIT_CHROMOSOMES:
+        if _chromosome_bfile(bfile_full_path, chrom) is not None:
+            continue
+        final = Path(f"{bfile_full_path}.chr{chrom}")
+        tmp = Path(f"{final}.tmp{os.getpid()}")
+        logger.info("Writing per-chromosome reference panel: %s", final)
+        subprocess.run(
+            [str(plink_binary), "--bfile", str(bfile_full_path), "--chr", str(chrom),
+             "--keep-allele-order", "--make-bed", "--out", str(tmp)],
+            check=True, capture_output=True, text=True,
+        )
+        for ext in (".bed", ".bim", ".fam"):
+            os.replace(f"{tmp}{ext}", f"{final}{ext}")
+        for ext in (".log", ".nosex"):
+            Path(f"{tmp}{ext}").unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # eQTL loading
 # ---------------------------------------------------------------------------
+
+
+def _find_eqtlgen_file(eqtl_dir: Path) -> Path:
+    """Return the one eQTLGen table in ``eqtl_dir``.
+
+    Directory listings come back in no fixed order, so taking the first
+    ``*.txt*`` or ``*.tsv*`` match could read a README or a second release
+    instead of the table. README and checksum files are ignored; anything
+    other than exactly one remaining candidate is an error.
+    """
+    candidates = sorted(
+        p for p in set(eqtl_dir.glob("*.txt*")) | set(eqtl_dir.glob("*.tsv*"))
+        if not p.name.lower().startswith("readme")
+        and not p.name.lower().endswith((".md5", ".sha256"))
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No eQTLGen files found in {eqtl_dir}")
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Expected one eQTLGen table in {eqtl_dir}, found {len(candidates)}: "
+            + ", ".join(p.name for p in candidates)
+        )
+    return candidates[0]
 
 
 def load_eqtl_source(
@@ -210,11 +272,7 @@ def load_eqtl_source(
 
 def _load_eqtlgen(eqtl_dir: Path, ref_freq_path: Path | None) -> pd.DataFrame:
     """Load eQTLGen cis-eQTL data with Z-to-beta conversion via MAF lookup."""
-    eqtl_files = list(eqtl_dir.glob("*.txt*")) + list(eqtl_dir.glob("*.tsv*"))
-    if not eqtl_files:
-        raise FileNotFoundError(f"No eQTLGen files found in {eqtl_dir}")
-
-    eqtl_path = eqtl_files[0]
+    eqtl_path = _find_eqtlgen_file(eqtl_dir)
     logger.info("Loading eQTLGen from %s", eqtl_path)
 
     df = pd.read_csv(eqtl_path, sep="\t", dtype={"SNP": str, "Gene": str})
@@ -390,10 +448,7 @@ def _load_eqtlgen_chunked(
     n_genes_valid : int
         Total unique genes after loader validity transforms (Bonferroni denominator).
     """
-    eqtl_files = list(eqtl_dir.glob("*.txt*")) + list(eqtl_dir.glob("*.tsv*"))
-    if not eqtl_files:
-        raise FileNotFoundError(f"No eQTLGen files found in {eqtl_dir}")
-    eqtl_path = eqtl_files[0]
+    eqtl_path = _find_eqtlgen_file(eqtl_dir)
 
     if ref_freq_path is None:
         raise ValueError(
@@ -924,8 +979,7 @@ def _reload_eqtlgen_for_coloc(
     chunksize: int,
 ) -> pd.DataFrame:
     """Re-stream eQTLGen retaining all rows for specified genes."""
-    eqtl_files = list(eqtl_dir.glob("*.txt*")) + list(eqtl_dir.glob("*.tsv*"))
-    eqtl_path = eqtl_files[0]
+    eqtl_path = _find_eqtlgen_file(eqtl_dir)
 
     freq_df = pd.read_csv(
         ref_freq_path, sep=r"\s+", dtype={"SNP": str}, usecols=["SNP", "MAF"],
@@ -1151,9 +1205,12 @@ def clump_instruments(
         extract_snps = instruments["SNP"].dropna().unique()
         extract_file.write_text("\n".join(extract_snps) + "\n")
 
+        # Same panel restricted to one chromosome when a split copy exists
+        # (ensure_ref_split); --chr below then selects every variant in it.
+        bfile = _chromosome_bfile(bfile_full_path, gene_chr) or bfile_full_path
         cmd = [
             str(plink_binary),
-            "--bfile", str(bfile_full_path),
+            "--bfile", str(bfile),
             "--extract", str(extract_file),
             "--clump", str(clump_file),
             "--clump-p1", "1",
@@ -1226,17 +1283,54 @@ def _complement_allele(allele: str) -> str:
     return "".join(COMPLEMENT.get(b, b) for b in allele)
 
 
+class _GwasJoinIndex:
+    """Row positions of the GWAS by rsID and by chr:pos, built once per run.
+
+    Joining an eQTL frame against only the GWAS rows these indexes return
+    gives the same frame as joining against the whole GWAS: an inner join
+    keeps just the matching rows, in the order of the eQTL rows, and the
+    returned positions keep the GWAS order among them. It saves copying the
+    GWAS and rebuilding its chr:pos keys for every gene. The hash tables are
+    built here, in the calling thread, so worker threads only read them.
+    """
+
+    def __init__(self, gwas_df: pd.DataFrame) -> None:
+        has_snp = gwas_df["SNP"].notna().to_numpy()
+        self._snp_rows = np.flatnonzero(has_snp)
+        self._snp_index = pd.Index(gwas_df["SNP"].to_numpy()[has_snp])
+        self.pos_keys = (
+            gwas_df["CHR"].astype(str) + ":" + gwas_df["POS"].astype(str)
+        ).to_numpy()
+        self._pos_index = pd.Index(self.pos_keys)
+        self._snp_index.get_indexer_for([])
+        self._pos_index.get_indexer_for([])
+
+    def rows_for_snps(self, snps: pd.Series) -> np.ndarray:
+        hits = self._snp_index.get_indexer_for(pd.unique(snps.to_numpy()))
+        return np.sort(self._snp_rows[hits[hits >= 0]])
+
+    def rows_for_positions(self, keys: pd.Series) -> np.ndarray:
+        hits = self._pos_index.get_indexer_for(pd.unique(keys.to_numpy()))
+        return np.sort(hits[hits >= 0])
+
+
 def _merge_eqtl_gwas_two_stage(
     eqtl_df: pd.DataFrame,
     gwas_df: pd.DataFrame,
     gwas_cols: list[str],
     suffixes: tuple[str, str] = ("_eqtl", "_gwas"),
+    lookup: _GwasJoinIndex | None = None,
 ) -> pd.DataFrame:
-    """Two-stage merge: rsID primary, chr:pos fallback for null-rsID GWAS rows.
+    """Two-stage merge: rsID first, then chr:pos for eQTL rows the rsID join missed.
 
     Shared by harmonisation and coloc to avoid divergent join strategies.
+    ``lookup``, built once from the same ``gwas_df``, restricts both joins to
+    the GWAS rows that can match; the result is identical.
     """
-    gwas_snp = gwas_df.loc[gwas_df["SNP"].notna()].copy()
+    if lookup is not None:
+        gwas_snp = gwas_df.iloc[lookup.rows_for_snps(eqtl_df["SNP"])]
+    else:
+        gwas_snp = gwas_df.loc[gwas_df["SNP"].notna()]
     merged = eqtl_df.merge(
         gwas_snp[["SNP"] + gwas_cols],
         on="SNP", how="inner", suffixes=suffixes,
@@ -1250,10 +1344,15 @@ def _merge_eqtl_gwas_two_stage(
         eqtl_pos["_chrpos"] = (
             eqtl_pos["chr"].astype(str) + ":" + eqtl_pos["pos"].astype(str)
         )
-        gwas_pos = gwas_df.copy()
-        gwas_pos["_chrpos"] = (
-            gwas_pos["CHR"].astype(str) + ":" + gwas_pos["POS"].astype(str)
-        )
+        if lookup is not None:
+            rows = lookup.rows_for_positions(eqtl_pos["_chrpos"])
+            gwas_pos = gwas_df.iloc[rows][gwas_cols].copy()
+            gwas_pos.insert(0, "_chrpos", lookup.pos_keys[rows])
+        else:
+            gwas_pos = gwas_df.copy()
+            gwas_pos["_chrpos"] = (
+                gwas_pos["CHR"].astype(str) + ":" + gwas_pos["POS"].astype(str)
+            )
         pos_merged = eqtl_pos.merge(
             gwas_pos[["_chrpos"] + gwas_cols],
             on="_chrpos", how="inner", suffixes=suffixes,
@@ -1272,10 +1371,12 @@ def _merge_eqtl_gwas_two_stage(
 def harmonise_gwas_eqtl(
     gwas_df: pd.DataFrame,
     instruments: pd.DataFrame,
+    lookup: _GwasJoinIndex | None = None,
 ) -> pd.DataFrame:
     """Align GWAS and eQTL alleles for MR instruments.
 
-    Uses vectorised operations for allele concordance.
+    Uses vectorised operations for allele concordance. ``lookup`` is passed
+    to the join (see ``_merge_eqtl_gwas_two_stage``).
     """
     if instruments.empty:
         return pd.DataFrame()
@@ -1283,7 +1384,7 @@ def harmonise_gwas_eqtl(
     gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"]
     gwas_cols = [c for c in gwas_cols if c in gwas_df.columns]
     merged = _merge_eqtl_gwas_two_stage(
-        instruments, gwas_df, gwas_cols, suffixes=("_exp", "_out"),
+        instruments, gwas_df, gwas_cols, suffixes=("_exp", "_out"), lookup=lookup,
     )
 
     if merged.empty:
@@ -2436,6 +2537,7 @@ def _run_mr_for_gene(
     source_name: str,
     bonf_threshold: float,
     skip_coloc: bool = False,
+    gwas_lookup: _GwasJoinIndex | None = None,
 ) -> dict | None:
     """Run MR pipeline for a single gene. Returns result dict or None.
 
@@ -2444,6 +2546,8 @@ def _run_mr_for_gene(
     skip_coloc : bool
         If True, skip inline coloc (used by chunked orchestrator which
         handles coloc in a separate Phase 3 pass).
+    gwas_lookup : _GwasJoinIndex | None
+        Join index built once from ``gwas_df``; same result, faster joins.
     """
     instruments = select_instruments(
         eqtl_df, gene,
@@ -2468,7 +2572,7 @@ def _run_mr_for_gene(
     if instruments.empty:
         return None
 
-    harmonised = harmonise_gwas_eqtl(gwas_df, instruments)
+    harmonised = harmonise_gwas_eqtl(gwas_df, instruments, lookup=gwas_lookup)
     if harmonised.empty:
         return None
 
@@ -2478,29 +2582,11 @@ def _run_mr_for_gene(
     by = harmonised["beta_outcome"].values
     sy = harmonised["se_outcome"].values
 
+    # select_instruments already dropped every SNP below f_stat_threshold, and
+    # harmonisation keeps the exposure beta and SE, so no instrument here is
+    # weak; weak_instrument_excluded stays in the output as False.
     f_stats = f_statistic(bx, sx)
     mean_f = float(np.mean(f_stats))
-
-    if np.all(f_stats < config.f_stat_threshold):
-        return {
-            "gene_ensembl_id": gene,
-            "gene_symbol": gene_info.get("symbol", ""),
-            "gene_entrez_id": gene_info.get("entrez_id"),
-            "gene_uniprot_id": gene_info.get("uniprot_id"),
-            "gene_chr": gene_info.get("chr"),
-            "gene_start": gene_info.get("start"),
-            "eqtl_source": source_name,
-            "n_instruments": k,
-            "mr_method": "none",
-            "mr_beta": np.nan, "mr_se": np.nan, "mr_pval": np.nan,
-            "mr_significant": False,
-            "bonferroni_threshold": bonf_threshold,
-            "mean_f_stat": mean_f,
-            "weak_instrument_excluded": True,
-            "heterogeneity_warning": False,
-            "coloc_supported": False,
-            "coloc_status": "not_run",
-        }
 
     result: dict = {
         "gene_ensembl_id": gene,
@@ -2619,6 +2705,7 @@ def _run_mr_for_gene(
             gwas_cols = [c for c in ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"] if c in gwas_df.columns]
             shared = _merge_eqtl_gwas_two_stage(
                 eqtl_gene, gwas_df, gwas_cols, suffixes=("_eqtl", "_gwas"),
+                lookup=gwas_lookup,
             )
 
             if len(shared) < config.min_coloc_snps:
@@ -2687,6 +2774,7 @@ def _run_coloc_for_gene(
     config: MRConfig,
     n_exp: int,
     n_out: int,
+    gwas_lookup: _GwasJoinIndex | None = None,
 ) -> dict:
     """Run colocalisation for a single MR-significant gene.
 
@@ -2701,6 +2789,7 @@ def _run_coloc_for_gene(
                  if c in gwas_df.columns]
     shared = _merge_eqtl_gwas_two_stage(
         eqtl_gene_df, gwas_df, gwas_cols, suffixes=("_eqtl", "_gwas"),
+        lookup=gwas_lookup,
     )
 
     if len(shared) < config.min_coloc_snps:
@@ -2821,6 +2910,32 @@ def _enforce_source_yield(
         )
 
 
+def _write_csv_with_json_lists(df: pd.DataFrame, path: Path) -> None:
+    """Write ``df`` as CSV, serialising list-valued object columns as JSON."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object:
+            sample = out[col].dropna().head(1)
+            if len(sample) > 0 and isinstance(sample.iloc[0], list):
+                out[col] = out[col].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
+    out.to_csv(path, index=False)
+
+
+def _write_drug_matches(output_dir: Path, mr_drug_matches: pd.DataFrame) -> None:
+    """Write the drug matches as parquet and CSV.
+
+    Both files are written even when there are no matches, so a rerun into
+    the same directory never leaves the previous run's CSV beside an empty
+    parquet.
+    """
+    if mr_drug_matches.empty:
+        pd.DataFrame().to_parquet(output_dir / "mr_drug_matches.parquet", engine="pyarrow", index=False)
+        pd.DataFrame().to_csv(output_dir / "mr_drug_matches.csv", index=False)
+        return
+    mr_drug_matches.to_parquet(output_dir / "mr_drug_matches.parquet", engine="pyarrow", index=False)
+    _write_csv_with_json_lists(mr_drug_matches, output_dir / "mr_drug_matches.csv")
+
+
 def run_mendelian_randomisation(
     gwas_path: Path,
     gwas_metadata: GWASMetadata,
@@ -2855,6 +2970,7 @@ def run_mendelian_randomisation(
 
     bfile_full_path = reference_config.genome_dir / reference_config.bfile_prefix
     ref_freq_path = ensure_ref_freq(bfile_full_path, plink_binary)
+    ensure_ref_split(bfile_full_path, plink_binary)
 
     logger.info("Loading GWAS summary statistics from %s", gwas_path)
     gwas_df = pd.read_parquet(gwas_path)
@@ -2870,6 +2986,8 @@ def run_mendelian_randomisation(
         100.0 * n_resolved / max(len(gwas_df), 1),
         ", ".join(f"{k}={v}" for k, v in maf_counters.items()),
     )
+    # Built after the MAF column is added; gwas_df is not modified again.
+    gwas_lookup = _GwasJoinIndex(gwas_df)
 
     all_results: list[dict] = []
     source_metadata: list[dict] = []
@@ -2932,7 +3050,6 @@ def run_mendelian_randomisation(
             n_gene_tasks, effective_workers,
         )
 
-        n_tested = 0
         n_significant = 0
         n_gene_tasks = 0
         task_times: list[tuple[str, float]] = []  # (gene_id, seconds)
@@ -2955,7 +3072,6 @@ def run_mendelian_randomisation(
                 last_log_time = phase2_t0
                 for task_idx, (gene, gene_instruments) in enumerate(gene_tasks):
                     gene_info = gene_info_map[gene]
-                    n_tested += 1
                     result, metrics = _run_mr_for_gene_timed(
                         gene=gene,
                         gene_info=gene_info,
@@ -2968,6 +3084,7 @@ def run_mendelian_randomisation(
                         source_name=source_name,
                         bonf_threshold=bonf_threshold,
                         skip_coloc=True,
+                        gwas_lookup=gwas_lookup,
                     )
                     task_times.append((gene, metrics["task_time_seconds"]))
                     if result is not None:
@@ -3021,6 +3138,7 @@ def run_mendelian_randomisation(
                             source_name=source_name,
                             bonf_threshold=bonf_threshold,
                             skip_coloc=True,
+                            gwas_lookup=gwas_lookup,
                         )
                         future_to_idx[future] = task_idx
 
@@ -3072,20 +3190,12 @@ def run_mendelian_randomisation(
                 # Reassemble in deterministic order
                 for idx in sorted(results_by_idx.keys()):
                     result = results_by_idx[idx]
-                    n_tested += 1
                     if result is not None:
                         all_results.append(result)
                         if result.get("mr_significant", False):
                             n_significant += 1
 
-        # Also record genes with valid data but no instruments (counted in Bonferroni)
         genes_with_instruments = set(instruments_df["gene"].unique()) if not instruments_df.empty else set()
-        genes_without_instruments = set(gene_metadata.keys()) - genes_with_instruments
-        for gene in genes_without_instruments:
-            gene_info = gene_info_map.get(gene, {})
-            if "chr" not in gene_info or "start" not in gene_info:
-                continue
-            n_tested += 1
 
         phase2_duration = time.time() - phase2_t0 if n_gene_tasks > 0 else 0.0
         phase2_genes_per_min = (n_gene_tasks / max(phase2_duration, 0.1)) * 60
@@ -3141,7 +3251,7 @@ def run_mendelian_randomisation(
                     try:
                         coloc_out = _run_coloc_for_gene(
                             gene, eqtl_gene_df, gwas_df, gwas_metadata,
-                            config, n_exp, n_out,
+                            config, n_exp, n_out, gwas_lookup=gwas_lookup,
                         )
                         r.update(coloc_out)
                     except ColocConfigurationError:
@@ -3308,25 +3418,8 @@ def run_mendelian_randomisation(
 
     # Save outputs
     mr_results.to_parquet(output_dir / "mr_results.parquet", engine="pyarrow", index=False)
-    mr_csv = mr_results.copy()
-    for col in mr_csv.columns:
-        if mr_csv[col].dtype == object:
-            sample = mr_csv[col].dropna().head(1)
-            if len(sample) > 0 and isinstance(sample.iloc[0], list):
-                mr_csv[col] = mr_csv[col].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
-    mr_csv.to_csv(output_dir / "mr_results.csv", index=False)
-
-    if not mr_drug_matches.empty:
-        mr_drug_matches.to_parquet(output_dir / "mr_drug_matches.parquet", engine="pyarrow", index=False)
-        dm_csv = mr_drug_matches.copy()
-        for col in dm_csv.columns:
-            if dm_csv[col].dtype == object:
-                sample = dm_csv[col].dropna().head(1)
-                if len(sample) > 0 and isinstance(sample.iloc[0], list):
-                    dm_csv[col] = dm_csv[col].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
-        dm_csv.to_csv(output_dir / "mr_drug_matches.csv", index=False)
-    else:
-        pd.DataFrame().to_parquet(output_dir / "mr_drug_matches.parquet", engine="pyarrow", index=False)
+    _write_csv_with_json_lists(mr_results, output_dir / "mr_results.csv")
+    _write_drug_matches(output_dir, mr_drug_matches)
 
     # Per-gene target verdicts - always written (empty frame if none eligible).
     if not mr_target_verdicts.empty:

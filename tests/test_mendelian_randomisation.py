@@ -3411,3 +3411,167 @@ class TestMhcSensitivityOutput:
         # MHC gene dropped from the excluded drug table.
         drugs_ex = pd.read_parquet(sens / "mr_drug_matches.parquet")
         assert set(drugs_ex["gene_ensembl_id"]) == {"OK"}
+
+
+# ---------------------------------------------------------------------------
+# Run time: join index, per-chromosome panel, file discovery, outputs
+# ---------------------------------------------------------------------------
+
+from repogen.analysis.mendelian_randomisation import (  # noqa: E402
+    _GwasJoinIndex,
+    _chromosome_bfile,
+    _find_eqtlgen_file,
+    _merge_eqtl_gwas_two_stage,
+    _write_drug_matches,
+    ensure_ref_split,
+)
+
+
+def _join_fixtures() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """eQTL rows covering every join path, and a GWAS with a missing rsID.
+
+    rs1 joins by rsID; rs2 has two allele rows and joins by rsID; rs4 is
+    missing from the GWAS but a row without an rsID sits at its position;
+    rs5 sits where the GWAS has another rsID; rs9 matches nothing.
+    """
+    eqtl = pd.DataFrame({
+        "SNP": ["rs1", "rs2", "rs2", "rs4", "rs5", "rs9"],
+        "gene": ["G1"] * 6,
+        "chr": [1, 1, 1, 1, 2, 3],
+        "pos": [100, 200, 200, 400, 500, 900],
+        "a1": ["A", "C", "C", "G", "T", "A"],
+        "a2": ["G", "T", "G", "A", "C", "C"],
+        "beta": [0.5, 0.3, 0.2, 0.4, 0.1, 0.6],
+        "se": [0.1] * 6,
+        "pval": [1e-10] * 6,
+        "n": [1000] * 6,
+    })
+    gwas = pd.DataFrame({
+        "SNP": ["rs0", "rs1", "rs2", None, "rs5b", "rs7"],
+        "CHR": [1, 1, 1, 1, 2, 3],
+        "POS": [50, 100, 200, 400, 500, 700],
+        "A1": ["A", "A", "C", "G", "T", "A"],
+        "A2": ["G", "G", "T", "A", "C", "C"],
+        "BETA": [0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+        "SE": [0.01] * 6,
+        "P": [0.5] * 6,
+        "N": [5000] * 6,
+        "MAF": [0.3] * 6,
+    })
+    return eqtl, gwas
+
+
+class TestGwasJoinIndex:
+    GWAS_COLS = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"]
+
+    @pytest.mark.parametrize("suffixes", [("_eqtl", "_gwas"), ("_exp", "_out")])
+    def test_join_identical_with_and_without_index(self, suffixes) -> None:
+        eqtl, gwas = _join_fixtures()
+        plain = _merge_eqtl_gwas_two_stage(eqtl, gwas, self.GWAS_COLS, suffixes=suffixes)
+        indexed = _merge_eqtl_gwas_two_stage(
+            eqtl, gwas, self.GWAS_COLS, suffixes=suffixes, lookup=_GwasJoinIndex(gwas),
+        )
+        assert list(plain["SNP"]) == ["rs1", "rs2", "rs2", "rs4", "rs5"]
+        pd.testing.assert_frame_equal(plain, indexed)
+
+    def test_harmonisation_identical_with_and_without_index(self) -> None:
+        eqtl, gwas = _join_fixtures()
+        pd.testing.assert_frame_equal(
+            harmonise_gwas_eqtl(gwas, eqtl),
+            harmonise_gwas_eqtl(gwas, eqtl, lookup=_GwasJoinIndex(gwas)),
+        )
+
+    def test_duplicated_positions_join_every_row(self) -> None:
+        eqtl, gwas = _join_fixtures()
+        extra = gwas.iloc[[3]].assign(A1="T", A2="C", BETA=0.07)
+        gwas = pd.concat([gwas, extra], ignore_index=True)
+        plain = _merge_eqtl_gwas_two_stage(eqtl, gwas, self.GWAS_COLS)
+        indexed = _merge_eqtl_gwas_two_stage(
+            eqtl, gwas, self.GWAS_COLS, lookup=_GwasJoinIndex(gwas),
+        )
+        assert (plain["SNP"] == "rs4").sum() == 2
+        pd.testing.assert_frame_equal(plain, indexed)
+
+
+class TestFindEqtlgenFile:
+    def test_single_table(self, tmp_path: Path) -> None:
+        (tmp_path / "cis_eqtls.txt.gz").write_bytes(b"")
+        assert _find_eqtlgen_file(tmp_path).name == "cis_eqtls.txt.gz"
+
+    def test_readme_and_checksums_ignored(self, tmp_path: Path) -> None:
+        (tmp_path / "cis_eqtls.txt.gz").write_bytes(b"")
+        (tmp_path / "README.txt").write_text("notes")
+        (tmp_path / "cis_eqtls.txt.gz.md5").write_text("abc")
+        assert _find_eqtlgen_file(tmp_path).name == "cis_eqtls.txt.gz"
+
+    def test_two_tables_is_an_error(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt.gz").write_bytes(b"")
+        (tmp_path / "b.tsv.gz").write_bytes(b"")
+        with pytest.raises(ValueError, match="Expected one eQTLGen table"):
+            _find_eqtlgen_file(tmp_path)
+
+    def test_no_table_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            _find_eqtlgen_file(tmp_path)
+
+
+def _fake_plink_outputs(cmd, *args, **kwargs):
+    """Stand-in for PLINK --make-bed: create the files it would write."""
+    out = cmd[cmd.index("--out") + 1]
+    for ext in (".bed", ".bim", ".fam", ".log"):
+        Path(out + ext).write_text("")
+
+
+class TestPerChromosomePanel:
+    def test_split_written_once(self, tmp_path: Path) -> None:
+        ref = tmp_path / "ref"
+        with patch("subprocess.run", side_effect=_fake_plink_outputs) as run:
+            ensure_ref_split(ref, Path("plink"))
+            assert run.call_count == 22
+            ensure_ref_split(ref, Path("plink"))
+            assert run.call_count == 22
+        cmd = run.call_args_list[0].args[0]
+        assert "--keep-allele-order" in cmd
+        assert all(_chromosome_bfile(ref, c) is not None for c in range(1, 23))
+        assert not list(tmp_path.glob("*.tmp*"))
+
+    def test_chromosome_bfile_only_for_autosomes(self, tmp_path: Path) -> None:
+        ref = tmp_path / "ref"
+        for ext in (".bed", ".bim", ".fam"):
+            Path(f"{ref}.chr7{ext}").write_text("")
+        assert _chromosome_bfile(ref, 7) == Path(f"{ref}.chr7")
+        assert _chromosome_bfile(ref, np.int64(7)) == Path(f"{ref}.chr7")
+        assert _chromosome_bfile(ref, 8) is None
+        assert _chromosome_bfile(ref, 23) is None
+        assert _chromosome_bfile(ref, None) is None
+
+    @pytest.mark.parametrize("split", [True, False])
+    def test_clumping_reads_the_split_panel_when_present(self, tmp_path: Path, split: bool) -> None:
+        ref = tmp_path / "ref"
+        if split:
+            for ext in (".bed", ".bim", ".fam"):
+                Path(f"{ref}.chr1{ext}").write_text("")
+        instruments = pd.DataFrame({
+            "SNP": ["rs1", "rs2"], "pval": [1e-10, 1e-9], "chr": [1, 1], "pos": [100, 200],
+        })
+        with patch("subprocess.run") as run:
+            clump_instruments(instruments, ref, 0.001, 1000, Path("plink"), gene_chr=1)
+        cmd = run.call_args.args[0]
+        expected = f"{ref}.chr1" if split else str(ref)
+        assert cmd[cmd.index("--bfile") + 1] == expected
+        assert cmd[cmd.index("--chr") + 1] == "1"
+
+
+class TestWriteDrugMatches:
+    def test_empty_writes_both_files(self, tmp_path: Path) -> None:
+        (tmp_path / "mr_drug_matches.csv").write_text("stale,previous,run\n")
+        _write_drug_matches(tmp_path, pd.DataFrame())
+        assert (tmp_path / "mr_drug_matches.parquet").exists()
+        assert "stale" not in (tmp_path / "mr_drug_matches.csv").read_text()
+
+    def test_list_columns_become_json_in_csv(self, tmp_path: Path) -> None:
+        matches = pd.DataFrame({"drug_chembl_id": ["CHEMBL1"], "atc_codes": [["N05AB06"]]})
+        _write_drug_matches(tmp_path, matches)
+        csv = pd.read_csv(tmp_path / "mr_drug_matches.csv")
+        assert csv.loc[0, "atc_codes"] == '["N05AB06"]'
+        assert pd.read_parquet(tmp_path / "mr_drug_matches.parquet").shape == (1, 2)
