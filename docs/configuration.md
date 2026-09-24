@@ -302,10 +302,12 @@ defaults to on because an MR estimate without colocalisation cannot distinguish
 a genuinely shared causal variant from two distinct variants in LD, which is
 the most common way cis-MR produces false positives.
 
-Branch C is by far the slowest stage. On CREATE, a full PGC3 schizophrenia run
-over 17,189 genes took **20.6 hours** at ~16-17 genes/min with `n_workers: 1`,
-peaking at 14.2 GB RSS. Budget accordingly, and raise `n_workers` (with
-`rule_threads` to match) if your scheduler will give you the cores.
+Branch C is the slowest stage. On CREATE, a full PGC3 schizophrenia run over
+17,189 genes takes about **2.1 hours** with 4 workers (about 330 genes/min),
+peaking at 9.7 GB in the Python process. The first run also writes a
+per-chromosome copy of the LD reference panel beside it, which takes a few
+minutes once. Raise `n_workers` (with `rule_threads` to match) if your
+scheduler will give you the cores.
 
 `mhc_sensitivity` reruns the whole analysis with MHC genes dropped and writes
 it to `mr/sensitivity/mhc_excluded/`. It is worth leaving on: in the run above
