@@ -4,6 +4,24 @@ All notable changes to RepoGen are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Branch C runs faster with identical results. The GWAS is indexed by rsID
+  and by position once per run instead of being copied for every gene, and
+  PLINK clumping reads a per-chromosome copy of the reference panel, written
+  beside it on first use with allele order kept.
+
+### Fixed
+
+- Branch C read whichever `*.txt*` or `*.tsv*` file the eQTLGen directory
+  listed first. It now ignores README and checksum files and stops with an
+  error if more than one table remains.
+- A Branch C run with no drug matches left an earlier run's
+  `mr_drug_matches.csv` in place beside an empty parquet; the CSV is now
+  always rewritten.
+
 ## [1.0.1] - 2026-08-04
 
 ### Fixed
