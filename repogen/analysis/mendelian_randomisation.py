@@ -413,7 +413,7 @@ _EQTLGEN_DTYPES = {
 
 _METABRAIN_USECOLS = [
     "gene", "SNP", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n",
-    "gene_chr", "gene_pos",
+    "gene_chr", "gene_pos", "eaf",
 ]
 
 
@@ -429,19 +429,71 @@ def _get_peak_rss_mb() -> float:
     return 0.0
 
 
+def load_eqtlgen_allele_frequencies(path: Path) -> pd.DataFrame:
+    """eQTLGen's own allele frequencies, indexed by SNP.
+
+    Reads the consortium's file (SNP, AlleleA, AlleleB, AlleleB_all, where
+    AlleleB is the assessed allele and AlleleB_all its frequency across
+    eQTLGen's cohorts). Returns columns ``allele_b``, ``allele_a`` and
+    ``freq_b``, one row per SNP.
+    """
+    af = pd.read_csv(
+        path, sep="\t", usecols=["SNP", "AlleleA", "AlleleB", "AlleleB_all"],
+        dtype={"SNP": str, "AlleleA": str, "AlleleB": str, "AlleleB_all": float},
+    )
+    af = af.drop_duplicates(subset="SNP").set_index("SNP")
+    af = af.rename(columns={"AlleleA": "allele_a", "AlleleB": "allele_b", "AlleleB_all": "freq_b"})
+    af["allele_a"] = af["allele_a"].str.upper().astype("category")
+    af["allele_b"] = af["allele_b"].str.upper().astype("category")
+    logger.info("eQTLGen allele frequencies loaded: %d SNPs from %s", len(af), path)
+    return af
+
+
+def _eqtlgen_frequencies(
+    chunk: pd.DataFrame,
+    allele_frequencies: pd.DataFrame | None,
+    maf_index: pd.Series | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Minor-allele and effect-allele frequency for each eQTLGen row.
+
+    With eQTLGen's own frequencies, the effect-allele frequency is the
+    frequency of the row's assessed allele (``a1``), turned round when the
+    file lists that allele as AlleleA; a row whose alleles match neither way
+    gets NaN and is dropped. With only the 1000 Genomes panel, the MAF has
+    no allele attached and the effect-allele frequency is unknown (NaN).
+    """
+    if allele_frequencies is None:
+        maf = chunk["SNP"].map(maf_index).to_numpy(dtype=float)
+        return maf, np.full(len(chunk), np.nan)
+    f = allele_frequencies.reindex(chunk["SNP"])
+    a1 = chunk["a1"].str.upper().to_numpy()
+    freq_b = f["freq_b"].to_numpy(dtype=float)
+    eaf = np.where(
+        a1 == f["allele_b"].astype(object).to_numpy(), freq_b,
+        np.where(a1 == f["allele_a"].astype(object).to_numpy(), 1.0 - freq_b, np.nan),
+    )
+    return np.minimum(eaf, 1.0 - eaf), eaf
+
+
 def _load_eqtlgen_chunked(
     eqtl_dir: Path,
     ref_freq_path: Path,
     instrument_pval: float,
     chunksize: int = 2_000_000,
+    allele_frequencies: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[str, dict], int]:
     """Memory-safe chunked eQTLGen loader for MR instrument extraction.
+
+    ``allele_frequencies`` (from ``load_eqtlgen_allele_frequencies``) supplies
+    the frequencies for the z-to-beta conversion and each row's effect-allele
+    frequency ``eaf``; without it the 1000 Genomes ``.frq`` MAF is used and
+    ``eaf`` is NaN. Rows without a frequency are dropped.
 
     Returns
     -------
     instruments_df : DataFrame
-        Rows with pval < instrument_pval, post-.frq merge and Z-to-beta.
-        Columns: SNP, gene, chr, pos, a1, a2, beta, se, pval, n, gene_chr, gene_pos
+        Rows with pval < instrument_pval, after the frequency lookup and Z-to-beta.
+        Columns: SNP, gene, chr, pos, a1, a2, beta, se, pval, n, eaf, gene_chr, gene_pos
     gene_metadata : dict[str, dict]
         Per-gene anchor metadata {gene_id: {"chr": int, "start": int}}.
         Uses gene_pos (TSS) when available; falls back to min(SNP pos).
@@ -450,23 +502,27 @@ def _load_eqtlgen_chunked(
     """
     eqtl_path = _find_eqtlgen_file(eqtl_dir)
 
-    if ref_freq_path is None:
+    if ref_freq_path is None and allele_frequencies is None:
         raise ValueError(
-            "ref_freq_path is required for eQTLGen Z-to-beta conversion."
+            "eQTLGen Z-to-beta conversion needs eQTLGen's allele frequencies "
+            "or the reference .frq (ref_freq_path)."
         )
 
     logger.info(
-        "Loading eQTLGen (chunked) from %s [instrument_pval=%.1e, chunksize=%d]",
+        "Loading eQTLGen (chunked) from %s [instrument_pval=%.1e, chunksize=%d, frequencies=%s]",
         eqtl_path, instrument_pval, chunksize,
+        "eQTLGen" if allele_frequencies is not None else "1000G .frq",
     )
 
-    freq_df = pd.read_csv(
-        ref_freq_path, sep=r"\s+", dtype={"SNP": str}, usecols=["SNP", "MAF"],
-    )
-    freq_df = freq_df.drop_duplicates(subset="SNP")
-    maf_index = freq_df.set_index("SNP")["MAF"]
-    logger.info("Reference .frq loaded: %d SNPs (%.2f GB)",
-                len(freq_df), freq_df.memory_usage(deep=True).sum() / 1e9)
+    maf_index = None
+    if allele_frequencies is None:
+        freq_df = pd.read_csv(
+            ref_freq_path, sep=r"\s+", dtype={"SNP": str}, usecols=["SNP", "MAF"],
+        )
+        freq_df = freq_df.drop_duplicates(subset="SNP")
+        maf_index = freq_df.set_index("SNP")["MAF"]
+        logger.info("Reference .frq loaded: %d SNPs (%.2f GB)",
+                    len(freq_df), freq_df.memory_usage(deep=True).sum() / 1e9)
 
     valid_genes: set[str] = set()
     gene_metadata: dict[str, dict] = {}
@@ -494,8 +550,8 @@ def _load_eqtlgen_chunked(
         available = {k: v for k, v in col_map.items() if k in chunk.columns}
         chunk = chunk.rename(columns=available)
 
-        # Indexed MAF lookup (equivalent to inner-join: rows without match -> NaN -> dropped)
-        chunk["MAF"] = chunk["SNP"].map(maf_index)
+        # Frequency lookup (equivalent to an inner join: rows without one are dropped)
+        chunk["MAF"], chunk["eaf"] = _eqtlgen_frequencies(chunk, allele_frequencies, maf_index)
         chunk = chunk.dropna(subset=["MAF"])
         if chunk.empty:
             continue
@@ -571,7 +627,7 @@ def _load_eqtlgen_chunked(
             instruments["a1"] = instruments["a1"].str.upper()
             instruments["a2"] = instruments["a2"].str.upper()
             out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n"]
-            for extra in ("gene_chr", "gene_pos"):
+            for extra in ("eaf", "gene_chr", "gene_pos"):
                 if extra in instruments.columns:
                     out_cols.append(extra)
             instrument_chunks.append(instruments[out_cols])
@@ -592,7 +648,7 @@ def _load_eqtlgen_chunked(
     if instrument_chunks:
         instruments_df = pd.concat(instrument_chunks, ignore_index=True)
     else:
-        out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n",
+        out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n", "eaf",
                     "gene_chr", "gene_pos"]
         instruments_df = pd.DataFrame(columns=out_cols)
 
@@ -890,7 +946,7 @@ def _load_metabrain_chunked(
             instruments["a1"] = instruments["a1"].str.upper()
             instruments["a2"] = instruments["a2"].str.upper()
             out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n"]
-            for extra in ("gene_chr", "gene_pos"):
+            for extra in ("eaf", "gene_chr", "gene_pos"):
                 if extra in instruments.columns:
                     out_cols.append(extra)
             instrument_chunks.append(instruments[out_cols])
@@ -911,7 +967,7 @@ def _load_metabrain_chunked(
     if instrument_chunks:
         instruments_df = pd.concat(instrument_chunks, ignore_index=True)
     else:
-        out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n",
+        out_cols = ["SNP", "gene", "chr", "pos", "a1", "a2", "beta", "se", "pval", "n", "eaf",
                     "gene_chr", "gene_pos"]
         instruments_df = pd.DataFrame(columns=out_cols)
 
@@ -955,17 +1011,21 @@ def _load_eqtl_coloc_genes(
     gene_set: set[str],
     source: str,
     chunksize: int = 2_000_000,
+    allele_frequencies: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Reload full locus data for specific genes (coloc Phase 3).
 
     Re-streams the source file, retaining ALL rows for genes in gene_set.
-    Applies same validity transforms as the respective full loader.
+    Applies same validity transforms as the respective full loader,
+    including the same eQTLGen allele frequencies.
     """
     if not gene_set:
         return pd.DataFrame()
 
     if source == "eqtlgen":
-        return _reload_eqtlgen_for_coloc(eqtl_dir, ref_freq_path, gene_set, chunksize)
+        return _reload_eqtlgen_for_coloc(
+            eqtl_dir, ref_freq_path, gene_set, chunksize, allele_frequencies,
+        )
     elif source.startswith("metabrain"):
         return _reload_metabrain_for_coloc(eqtl_dir, gene_set, chunksize)
     else:
@@ -977,14 +1037,17 @@ def _reload_eqtlgen_for_coloc(
     ref_freq_path: Path,
     gene_set: set[str],
     chunksize: int,
+    allele_frequencies: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Re-stream eQTLGen retaining all rows for specified genes."""
     eqtl_path = _find_eqtlgen_file(eqtl_dir)
 
-    freq_df = pd.read_csv(
-        ref_freq_path, sep=r"\s+", dtype={"SNP": str}, usecols=["SNP", "MAF"],
-    )
-    freq_df = freq_df.drop_duplicates(subset="SNP")
+    maf_index = None
+    if allele_frequencies is None:
+        freq_df = pd.read_csv(
+            ref_freq_path, sep=r"\s+", dtype={"SNP": str}, usecols=["SNP", "MAF"],
+        )
+        maf_index = freq_df.drop_duplicates(subset="SNP").set_index("SNP")["MAF"]
 
     col_map = {
         "Pvalue": "pval", "SNP": "SNP", "SNPChr": "chr", "SNPPos": "pos",
@@ -1005,11 +1068,12 @@ def _reload_eqtlgen_for_coloc(
         available = {k: v for k, v in col_map.items() if k in chunk.columns}
         chunk = chunk.rename(columns=available)
 
-        chunk = chunk.loc[chunk["gene"].isin(gene_set)]
+        chunk = chunk.loc[chunk["gene"].isin(gene_set)].copy()
         if chunk.empty:
             continue
 
-        chunk = chunk.merge(freq_df, on="SNP", how="inner")
+        chunk["MAF"], _ = _eqtlgen_frequencies(chunk, allele_frequencies, maf_index)
+        chunk = chunk.dropna(subset=["MAF"])
         if chunk.empty:
             continue
 
@@ -1320,12 +1384,16 @@ def _merge_eqtl_gwas_two_stage(
     gwas_cols: list[str],
     suffixes: tuple[str, str] = ("_eqtl", "_gwas"),
     lookup: _GwasJoinIndex | None = None,
+    positional: bool = True,
 ) -> pd.DataFrame:
     """Two-stage merge: rsID first, then chr:pos for eQTL rows the rsID join missed.
 
     Shared by harmonisation and coloc to avoid divergent join strategies.
     ``lookup``, built once from the same ``gwas_df``, restricts both joins to
-    the GWAS rows that can match; the result is identical.
+    the GWAS rows that can match; the result is identical. ``positional``
+    False skips the chr:pos stage; callers pass False when the eQTL source
+    is on another genome build than the GWAS, where equal numbers are
+    different places.
     """
     if lookup is not None:
         gwas_snp = gwas_df.iloc[lookup.rows_for_snps(eqtl_df["SNP"])]
@@ -1339,7 +1407,7 @@ def _merge_eqtl_gwas_two_stage(
     n_rsid = len(merged)
     unmatched = eqtl_df.loc[~eqtl_df["SNP"].isin(merged["SNP"])]
 
-    if len(unmatched) > 0:
+    if positional and len(unmatched) > 0:
         eqtl_pos = unmatched.copy()
         eqtl_pos["_chrpos"] = (
             eqtl_pos["chr"].astype(str) + ":" + eqtl_pos["pos"].astype(str)
@@ -1368,54 +1436,216 @@ def _merge_eqtl_gwas_two_stage(
     return merged
 
 
+# Palindromic SNPs whose effect-allele frequency lies within this margin of
+# 0.5 in either data set cannot have their strand checked, so they are
+# dropped. The margin is TwoSampleMR's default (harmonise_data tolerance).
+_PALINDROMIC_MARGIN = 0.08
+
+_COLOC_GWAS_COLS = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"]
+
+
+def _source_build(source_name: str) -> str | None:
+    """Genome build an eQTL source reports positions on, if known."""
+    name = str(source_name).lower()
+    for prefix, build in _EQTL_SOURCE_BUILD.items():
+        if name.startswith(prefix):
+            return build
+    return None
+
+
+def _positional_join_allowed(source_name: str, gwas_metadata: GWASMetadata) -> bool:
+    """A chr:pos join is meaningful only when both sides use the same build."""
+    build = _source_build(source_name)
+    return build is not None and build == getattr(gwas_metadata, "genome_build", None)
+
+
+def _build_instrument_set(
+    candidates: pd.DataFrame,
+    gwas_df: pd.DataFrame,
+    config: MRConfig,
+    bfile_full_path: Path,
+    plink_binary: Path,
+    gene_chr: int | None = None,
+    lookup: _GwasJoinIndex | None = None,
+    allow_positional: bool = True,
+) -> tuple[pd.DataFrame, dict]:
+    """Instruments for one gene: match to the GWAS first, then clump by eQTL strength.
+
+    Every candidate is harmonised with the GWAS before clumping, so a strong
+    eQTL SNP the GWAS lacks cannot clump away its usable neighbours, as SMR
+    likewise takes its top SNP among those both data sets share (Zhu et al.
+    2016). The lead instrument is the usable SNP with the
+    largest eQTL |z|, ties broken by SNP ID; P values are not used because
+    eQTLGen floors them, which left the choice among ties to file order.
+    Clumping ranks by the same |z|. PLINK cannot clump a SNP missing from
+    the reference panel, so a lead missing from the panel is kept alone.
+
+    Returns the harmonised instrument rows, lead first, and the per-gene
+    counts and flags reported in the results.
+    """
+    info: dict = {
+        "n_candidate_snps": int(candidates["SNP"].nunique()),
+        "n_usable_snps": 0,
+        "lead_instrument_snp": None,
+        "lead_instrument_palindromic": None,
+        "lead_instrument_in_panel": None,
+    }
+    harmonised = harmonise_gwas_eqtl(
+        gwas_df, candidates, lookup=lookup, allow_positional=allow_positional,
+    )
+    pal = harmonised.attrs.get("palindromic", {})
+    for key in ("kept", "dropped_no_frequency", "dropped_near_half", "dropped_disagree"):
+        info[f"palindromic_{key}"] = int(pal.get(key, 0))
+    if harmonised.empty:
+        return harmonised, info
+
+    abs_z = (harmonised["beta_exposure"] / harmonised["se_exposure"]).abs()
+    usable = (
+        harmonised.assign(abs_z=abs_z)
+        .sort_values(["abs_z", "SNP"], ascending=[False, True], kind="mergesort")
+        .drop_duplicates(subset="SNP", keep="first")
+        .reset_index(drop=True)
+    )
+    lead_snp = usable.loc[0, "SNP"]
+    info["n_usable_snps"] = len(usable)
+    info["lead_instrument_snp"] = lead_snp
+    info["lead_instrument_palindromic"] = bool(usable.loc[0, "palindromic"])
+    if len(usable) == 1:
+        return usable.drop(columns="abs_z"), info
+
+    # PLINK orders index SNPs by the P column; a rank-based value keeps the
+    # |z| order and stays far below --clump-p2 (0.01).
+    to_clump = pd.DataFrame({"SNP": usable["SNP"], "pval": (np.arange(len(usable)) + 1) * 1e-12})
+    clumped = clump_instruments(
+        to_clump, bfile_full_path,
+        clump_r2=config.clump_r2,
+        clump_kb=config.cis_window_kb,
+        plink_binary=plink_binary,
+        gene_chr=gene_chr,
+    )
+    retained = set(clumped["SNP"])
+    info["lead_instrument_in_panel"] = lead_snp in retained
+    if lead_snp in retained:
+        instruments = usable.loc[usable["SNP"].isin(retained)]
+    else:
+        instruments = usable.iloc[:1]
+    return instruments.drop(columns="abs_z").reset_index(drop=True), info
+
+
+def _coloc_shared_snps(
+    eqtl_gene_df: pd.DataFrame,
+    gwas_df: pd.DataFrame,
+    lookup: _GwasJoinIndex | None = None,
+    allow_positional: bool = True,
+) -> pd.DataFrame:
+    """SNPs shared by a gene's eQTL region and the GWAS, for colocalisation.
+
+    coloc.abf uses squared z scores, so allele orientation does not matter,
+    but a joined row must be the same variant: when both sides carry
+    alleles, rows whose alleles do not match in any orientation are
+    dropped. Each SNP is counted once.
+    """
+    gwas_cols = [c for c in _COLOC_GWAS_COLS if c in gwas_df.columns]
+    shared = _merge_eqtl_gwas_two_stage(
+        eqtl_gene_df, gwas_df, gwas_cols, suffixes=("_eqtl", "_gwas"),
+        lookup=lookup, positional=allow_positional,
+    )
+    if shared.empty:
+        return shared
+    if {"a1", "a2", "A1", "A2"}.issubset(shared.columns):
+        m = _allele_matches(shared)
+        same_variant = m["direct"] | m["flipped"] | m["comp_direct"] | m["comp_flipped"]
+        shared = shared.loc[same_variant]
+    return shared.drop_duplicates(subset="SNP", keep="first").reset_index(drop=True)
+
+
+def _allele_matches(merged: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Compare eQTL alleles (a1, a2) with GWAS alleles (A1, A2) row by row."""
+    e_a1 = merged["a1"].str.upper().values
+    e_a2 = merged["a2"].str.upper().values
+    g_a1 = merged["A1"].str.upper().values
+    g_a2 = merged["A2"].str.upper().values
+    comp_a1 = np.array([_complement_allele(a) for a in e_a1])
+    comp_a2 = np.array([_complement_allele(a) for a in e_a2])
+    return {
+        "direct": (e_a1 == g_a1) & (e_a2 == g_a2),
+        "flipped": (e_a1 == g_a2) & (e_a2 == g_a1),
+        "comp_direct": (comp_a1 == g_a1) & (comp_a2 == g_a2),
+        "comp_flipped": (comp_a1 == g_a2) & (comp_a2 == g_a1),
+        "palindromic": np.array([
+            (set(a) == {"A", "T"} or set(a) == {"C", "G"}) for a in zip(e_a1, e_a2)
+        ], dtype=bool),
+    }
+
+
 def harmonise_gwas_eqtl(
     gwas_df: pd.DataFrame,
     instruments: pd.DataFrame,
     lookup: _GwasJoinIndex | None = None,
+    allow_positional: bool = True,
 ) -> pd.DataFrame:
     """Align GWAS and eQTL alleles for MR instruments.
 
-    Uses vectorised operations for allele concordance. ``lookup`` is passed
-    to the join (see ``_merge_eqtl_gwas_two_stage``).
+    Non-palindromic SNPs match directly, swapped, or on the other strand.
+    A palindromic SNP (A/T or C/G) cannot show a strand flip in its letters,
+    so it is matched on the forward strand, which PGC3, MetaBrain and
+    eQTLGen all use, and kept only when the check the letters cannot make
+    is possible by frequency: the eQTL effect-allele frequency (``eaf``) and
+    the GWAS control frequency (``FCON``) of that allele are both known,
+    both at least ``_PALINDROMIC_MARGIN`` from 0.5, and on the same side of
+    it, the check MR-Base describes (Hemani et al. 2018); a disagreement is
+    dropped rather than flipped. Without those frequencies palindromic SNPs
+    are dropped. The counts are in ``result.attrs["palindromic"]``.
+
+    ``lookup`` and ``allow_positional`` are passed to the join (see
+    ``_merge_eqtl_gwas_two_stage``).
     """
     if instruments.empty:
         return pd.DataFrame()
 
-    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"]
+    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF", "FCON"]
     gwas_cols = [c for c in gwas_cols if c in gwas_df.columns]
     merged = _merge_eqtl_gwas_two_stage(
         instruments, gwas_df, gwas_cols, suffixes=("_exp", "_out"), lookup=lookup,
+        positional=allow_positional,
     )
 
     if merged.empty:
         return pd.DataFrame()
 
-    e_a1 = merged["a1"].str.upper().values
-    e_a2 = merged["a2"].str.upper().values
-    g_a1 = merged["A1"].str.upper().values
-    g_a2 = merged["A2"].str.upper().values
+    m = _allele_matches(merged)
+    direct, flipped, palindromic = m["direct"], m["flipped"], m["palindromic"]
+    compatible = direct | flipped | m["comp_direct"] | m["comp_flipped"]
 
-    direct = (e_a1 == g_a1) & (e_a2 == g_a2)
-    flipped = (e_a1 == g_a2) & (e_a2 == g_a1)
+    eaf_eqtl = (
+        pd.to_numeric(merged["eaf"], errors="coerce").to_numpy(dtype=float)
+        if "eaf" in merged.columns else np.full(len(merged), np.nan)
+    )
+    fcon = (
+        pd.to_numeric(merged["FCON"], errors="coerce").to_numpy(dtype=float)
+        if "FCON" in merged.columns else np.full(len(merged), np.nan)
+    )
+    # GWAS frequency of the eQTL effect allele, on the forward strand.
+    eaf_gwas = np.where(direct, fcon, np.where(flipped, 1.0 - fcon, np.nan))
+    pal = palindromic & (direct | flipped)
+    has_freq = np.isfinite(eaf_eqtl) & np.isfinite(eaf_gwas)
+    near_half = has_freq & (
+        (np.abs(eaf_eqtl - 0.5) < _PALINDROMIC_MARGIN)
+        | (np.abs(eaf_gwas - 0.5) < _PALINDROMIC_MARGIN)
+    )
+    agree = (eaf_eqtl < 0.5) == (eaf_gwas < 0.5)
+    pal_keep = pal & has_freq & ~near_half & agree
+    counts = {
+        "kept": int(pal_keep.sum()),
+        "dropped_no_frequency": int((pal & ~has_freq).sum()),
+        "dropped_near_half": int((pal & near_half).sum()),
+        "dropped_disagree": int((pal & has_freq & ~near_half & ~agree).sum()),
+    }
 
-    comp_a1 = np.array([_complement_allele(a) for a in e_a1])
-    comp_a2 = np.array([_complement_allele(a) for a in e_a2])
-    comp_direct = (comp_a1 == g_a1) & (comp_a2 == g_a2)
-    comp_flipped = (comp_a1 == g_a2) & (comp_a2 == g_a1)
+    keep = (compatible & ~palindromic) | pal_keep
+    flip_sign = np.where(palindromic, flipped, flipped | m["comp_flipped"])
 
-    palindromic = np.array([
-        (set(a) == {"A", "T"} or set(a) == {"C", "G"})
-        for a in zip(e_a1, e_a2)
-    ])
-
-    keep = (direct | flipped | comp_direct | comp_flipped) & ~palindromic
-    flip_sign = flipped | comp_flipped
-
-    n_excluded_palindromic = palindromic.sum()
-    n_excluded_nomatch = (~(direct | flipped | comp_direct | comp_flipped) & ~palindromic).sum()
-
-    if n_excluded_palindromic > 0:
-        logger.debug("Excluded %d palindromic SNPs", n_excluded_palindromic)
+    n_excluded_nomatch = int((~compatible & ~palindromic).sum())
     if n_excluded_nomatch > 0:
         logger.warning("Excluded %d SNPs with incompatible alleles", n_excluded_nomatch)
 
@@ -1427,6 +1657,7 @@ def harmonise_gwas_eqtl(
 
     result = pd.DataFrame({
         "SNP": merged["SNP"].values,
+        "pos": merged["pos"].values if "pos" in merged.columns else np.nan,
         "beta_exposure": merged["beta"].values,
         "se_exposure": merged["se"].values,
         "beta_outcome": gwas_beta,
@@ -1435,7 +1666,9 @@ def harmonise_gwas_eqtl(
         "n_exposure": merged["n"].values if "n" in merged.columns else np.nan,
         "n_outcome": merged["N"].values if "N" in merged.columns else np.nan,
         "maf": merged["MAF"].values if "MAF" in merged.columns else np.nan,
+        "palindromic": palindromic[keep],
     })
+    result.attrs["palindromic"] = counts
 
     return result
 
@@ -2287,9 +2520,10 @@ def _annotate_fdr_track(
     return mr_results
 
 
-# Best-effort eQTL-source -> gene-coordinate build map for the *approximate*,
-# opt-in coordinate fallback only. The Ensembl-membership primary path needs
-# no build assumption.
+# Genome build each eQTL source reports positions on (eQTLGen GRCh37,
+# MetaBrain GRCh38). Used to allow a chr:pos join with the GWAS only on the
+# same build, and by the approximate, opt-in MHC coordinate fallback; the
+# Ensembl-membership MHC flag needs no build.
 _EQTL_SOURCE_BUILD = {"eqtlgen": "GRCh37", "metabrain": "GRCh38", "gtex": "GRCh38"}
 
 
@@ -2549,7 +2783,7 @@ def _run_mr_for_gene(
     gwas_lookup : _GwasJoinIndex | None
         Join index built once from ``gwas_df``; same result, faster joins.
     """
-    instruments = select_instruments(
+    candidates = select_instruments(
         eqtl_df, gene,
         cis_window_kb=config.cis_window_kb,
         gene_start=gene_info["start"],
@@ -2558,23 +2792,20 @@ def _run_mr_for_gene(
         f_stat_threshold=config.f_stat_threshold,
     )
 
-    if instruments.empty:
+    if candidates.empty:
         return None
 
-    instruments = clump_instruments(
-        instruments, bfile_full_path,
-        clump_r2=config.clump_r2,
-        clump_kb=config.cis_window_kb,
-        plink_binary=plink_binary,
-        gene_chr=gene_info.get("chr"),
+    allow_positional = _positional_join_allowed(source_name, gwas_metadata)
+    harmonised, instrument_info = _build_instrument_set(
+        candidates, gwas_df, config, bfile_full_path, plink_binary,
+        gene_chr=gene_info.get("chr"), lookup=gwas_lookup,
+        allow_positional=allow_positional,
     )
-
-    if instruments.empty:
-        return None
-
-    harmonised = harmonise_gwas_eqtl(gwas_df, instruments, lookup=gwas_lookup)
     if harmonised.empty:
         return None
+    distance_kb = np.abs(harmonised["pos"].to_numpy(dtype=float) - float(gene_info["start"])) / 1000.0
+    instrument_info["min_instrument_distance_kb"] = float(np.min(distance_kb))
+    instrument_info["instruments_beyond_100kb"] = bool(np.all(distance_kb > 100.0))
 
     k = len(harmonised)
     bx = harmonised["beta_exposure"].values
@@ -2600,6 +2831,7 @@ def _run_mr_for_gene(
         "mean_f_stat": mean_f,
         "weak_instrument_excluded": False,
         "bonferroni_threshold": bonf_threshold,
+        **instrument_info,
     }
 
     if k == 1:
@@ -2702,10 +2934,8 @@ def _run_mr_for_gene(
     if not skip_coloc and config.coloc_enabled and result.get("mr_significant", False):
         try:
             eqtl_gene = eqtl_df.loc[eqtl_df["gene"] == gene].copy()
-            gwas_cols = [c for c in ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"] if c in gwas_df.columns]
-            shared = _merge_eqtl_gwas_two_stage(
-                eqtl_gene, gwas_df, gwas_cols, suffixes=("_eqtl", "_gwas"),
-                lookup=gwas_lookup,
+            shared = _coloc_shared_snps(
+                eqtl_gene, gwas_df, lookup=gwas_lookup, allow_positional=allow_positional,
             )
 
             if len(shared) < config.min_coloc_snps:
@@ -2775,6 +3005,7 @@ def _run_coloc_for_gene(
     n_exp: int,
     n_out: int,
     gwas_lookup: _GwasJoinIndex | None = None,
+    allow_positional: bool = True,
 ) -> dict:
     """Run colocalisation for a single MR-significant gene.
 
@@ -2785,11 +3016,8 @@ def _run_coloc_for_gene(
     n_cases = getattr(gwas_metadata, "n_cases", None)
     n_controls = getattr(gwas_metadata, "n_controls", None)
 
-    gwas_cols = [c for c in ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF"]
-                 if c in gwas_df.columns]
-    shared = _merge_eqtl_gwas_two_stage(
-        eqtl_gene_df, gwas_df, gwas_cols, suffixes=("_eqtl", "_gwas"),
-        lookup=gwas_lookup,
+    shared = _coloc_shared_snps(
+        eqtl_gene_df, gwas_df, lookup=gwas_lookup, allow_positional=allow_positional,
     )
 
     if len(shared) < config.min_coloc_snps:
@@ -2910,6 +3138,23 @@ def _enforce_source_yield(
         )
 
 
+def _instrument_summary(results: list[dict], source_name: str) -> dict:
+    """Per-source totals of the instrument-set counts, for the run metadata.
+
+    The palindromic counts are candidate SNP rows summed over the genes that
+    produced a result.
+    """
+    rows = [r for r in results if r.get("eqtl_source") == source_name]
+    summary = {
+        f"palindromic_{key}": sum(int(r.get(f"palindromic_{key}") or 0) for r in rows)
+        for key in ("kept", "dropped_no_frequency", "dropped_near_half", "dropped_disagree")
+    }
+    summary["n_genes_palindromic_lead"] = sum(r.get("lead_instrument_palindromic") is True for r in rows)
+    summary["n_genes_lead_outside_panel"] = sum(r.get("lead_instrument_in_panel") is False for r in rows)
+    summary["n_genes_instruments_beyond_100kb"] = sum(r.get("instruments_beyond_100kb") is True for r in rows)
+    return summary
+
+
 def _write_csv_with_json_lists(df: pd.DataFrame, path: Path) -> None:
     """Write ``df`` as CSV, serialising list-valued object columns as JSON."""
     out = df.copy()
@@ -2999,9 +3244,21 @@ def run_mendelian_randomisation(
         # --- Phase 1: chunked instrument extraction ---
         load_stats: dict[str, int] = {}
         needs_freq = source_name.lower() == "eqtlgen"
+        allele_frequencies = None
+        if needs_freq and source_config.allele_frequency_path is not None:
+            allele_frequencies = load_eqtlgen_allele_frequencies(
+                source_config.allele_frequency_path,
+            )
+        elif needs_freq:
+            logger.warning(
+                "No eQTLGen allele-frequency file configured "
+                "(mr.eqtl_sources[].allele_frequency_path): using the 1000 Genomes "
+                "MAF, which drops SNPs absent from the panel and all palindromic SNPs.",
+            )
         if needs_freq:
             instruments_df, gene_metadata, n_genes_valid = _load_eqtlgen_chunked(
                 source_config.path, ref_freq_path, config.instrument_pval,
+                allele_frequencies=allele_frequencies,
             )
         else:
             instruments_df, gene_metadata, n_genes_valid = _load_metabrain_chunked(
@@ -3229,7 +3486,9 @@ def run_mendelian_randomisation(
             coloc_df = _load_eqtl_coloc_genes(
                 source_config.path, ref_freq_path if needs_freq else None,
                 significant_genes, source_name,
+                allele_frequencies=allele_frequencies,
             )
+            allow_positional = _positional_join_allowed(source_name, gwas_metadata)
 
             if not coloc_df.empty:
                 coloc_grouped = coloc_df.groupby("gene")
@@ -3252,6 +3511,7 @@ def run_mendelian_randomisation(
                         coloc_out = _run_coloc_for_gene(
                             gene, eqtl_gene_df, gwas_df, gwas_metadata,
                             config, n_exp, n_out, gwas_lookup=gwas_lookup,
+                            allow_positional=allow_positional,
                         )
                         r.update(coloc_out)
                     except ColocConfigurationError:
@@ -3312,6 +3572,11 @@ def run_mendelian_randomisation(
                 round(phase2_result_fraction, 4)
                 if phase2_result_fraction is not None else None
             ),
+            "allele_frequencies": "eqtlgen" if allele_frequencies is not None else (
+                "1000g_maf" if needs_freq else "source_file"
+            ),
+            "positional_join": _positional_join_allowed(source_name, gwas_metadata),
+            **_instrument_summary(all_results, source_name),
             **load_stats,
         })
 

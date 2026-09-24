@@ -9,6 +9,7 @@ genes) on KCL CREATE:
 
     rule                       observed        budget
     prepare_gwas                2m29           30m
+    prepare_gwas_mr             (new)          30m
     prepare_gwas_spredixcan     2m10           30m
     spredixcan                  3m43, 2.4 GB   60m, 8 GB
     extract_drug_signatures     9m14           120m

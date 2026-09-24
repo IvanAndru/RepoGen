@@ -1,7 +1,7 @@
 rule mendelian_randomisation:
     input:
-        gwas=f"{PREP_DIR}/gwas_standardized.parquet",
-        gwas_meta=f"{PREP_DIR}/gwas_standardized.meta.json",
+        gwas=f"{PREP_DIR}/gwas_mr.parquet",
+        gwas_meta=f"{PREP_DIR}/gwas_mr.meta.json",
         drug_targets=f"{DRUG_DIR}/drug_targets.parquet",
     output:
         results=f"{MR_DIR}/mr_results.parquet",
