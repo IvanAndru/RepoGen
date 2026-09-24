@@ -13,7 +13,7 @@ rule mendelian_randomisation:
         mr_dir=MR_DIR,
     threads: int(config.get("mr", {}).get("rule_threads") or config.get("mr", {}).get("n_workers", 4))
     resources:
-        runtime=2400,
+        runtime=720,
         mem_mb=32000,
     log:
         f"{LOG_DIR}/mendelian_randomisation.log",
