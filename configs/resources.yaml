@@ -266,6 +266,17 @@ resources:
     local_path: "resources/eqtl/gtex_v8/"
     manual: true
 
+  # Allele frequencies of the assessed allele for every SNP in eQTLGen's
+  # cis-eQTL analysis, from all its cohorts except Framingham. Branch C uses
+  # them to turn eQTLGen z scores into effect sizes and to check the strand
+  # of palindromic SNPs; without them it falls back to the 1000 Genomes MAF.
+  eqtlgen_allele_frequency:
+    branches: [c]
+    url: "https://download.gcc.rug.nl/downloads/eqtlgen/cis-eqtl/2018-07-18_SNP_AF_for_AlleleB_combined_allele_counts_and_MAF_pos_added.txt.gz"
+    checksum: "sha256:edffd43094598d08db6b423f7b3ce68b000a02f0b993ea4cfcf1f61a8175485d"
+    local_path: "resources/eqtl/eqtlgen_af/2018-07-18_SNP_AF_for_AlleleB_combined_allele_counts_and_MAF_pos_added.txt.gz"
+    description: "eQTLGen allele frequencies (240 MB): z-to-beta conversion and palindromic SNP checks in Branch C"
+
   eqtlgen:
     branches: [c]
     url: "https://www.eqtlgen.org/cis-eqtls.html"

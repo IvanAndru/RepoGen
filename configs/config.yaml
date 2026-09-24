@@ -183,6 +183,8 @@ mr:
   eqtl_sources:
     - source: "eqtlgen"
       path: "resources/eqtl/eqtlgen/"
+      # eQTLGen's own allele frequencies (setup-resources: eqtlgen_allele_frequency)
+      allele_frequency_path: "resources/eqtl/eqtlgen_af/2018-07-18_SNP_AF_for_AlleleB_combined_allele_counts_and_MAF_pos_added.txt.gz"
       required: true              # fail loud if this source silently degrades
       min_result_fraction: 0.5    # raise if Phase-2 yield < 50% (blood-eQTL baseline ~90%)
     # Brain eQTL source:
@@ -192,7 +194,7 @@ mr:
                                   # (no explicit min -> 0.10 default floor; brain coverage is lower)
 
   # Instrument selection
-  cis_window_kb: 1000              # ±1Mb from gene TSS
+  cis_window_kb: 1000              # ±1Mb around the gene position the eQTL source reports
   instrument_pval: 5.0e-8          # genome-wide significance
   clump_r2: 0.001                  # conservative LD clumping
   f_stat_threshold: 10             # weak instrument filter

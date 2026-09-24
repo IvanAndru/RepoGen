@@ -278,8 +278,9 @@ per-tissue nulls are behaving.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `eqtl_sources` | - | `eqtlgen`, `metabrain`, or both |
-| `cis_window_kb` | `1000` | cis region around each gene |
+| `eqtl_sources` | - | `eqtlgen`, `metabrain`, or both; each has `source`, `path`, and optionally `allele_frequency_path`, `required`, `min_result_fraction` |
+| `eqtl_sources[].allele_frequency_path` | `null` | eQTLGen only: its allele-frequency file (setup-resources `eqtlgen_allele_frequency`); without it the 1000 Genomes MAF is used and palindromic SNPs are dropped |
+| `cis_window_kb` | `1000` | cis region around the gene position the eQTL source reports |
 | `instrument_pval` | `5e-08` | Instrument selection threshold |
 | `clump_r2` | `0.001` | LD clumping threshold |
 | `f_stat_threshold` | `10.0` | Weak-instrument filter |
@@ -296,6 +297,18 @@ per-tissue nulls are behaving.
 | `mhc_sensitivity` | see below | Repeat the analysis with MHC genes dropped |
 | `n_workers` | `1` | Parallel workers for the gene loop |
 | `rule_threads` | `null` | CPUs requested for the MR rule; defaults to the rule's own budget |
+
+Instruments are chosen among SNPs the GWAS can use. Every candidate is matched
+to the GWAS first, by rsID, and by position only when the eQTL source is on
+the GWAS's genome build, with matching alleles. A palindromic SNP (A/T or
+C/G) is kept only when the eQTL and GWAS frequencies of its effect allele
+(MetaBrain's `eaf`, eQTLGen's allele-frequency file, the GWAS control
+frequency `FCON`) are both at least 0.08 from 0.5 and on the same side of
+it. The lead instrument is the usable SNP with the largest eQTL |z|, and LD
+clumping ranks by the same |z| (eQTLGen floors its P values, so ranking by P
+left ties to file order). Branch C therefore reads its own GWAS preparation,
+`prepare_data/gwas_mr.parquet`, which skips reference-panel harmonisation,
+since that step removes every palindromic SNP.
 
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish

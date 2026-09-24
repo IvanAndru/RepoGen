@@ -71,3 +71,73 @@ rule prepare_gwas:
             {params.remove_mhc_flag} \
             2>&1 | tee {log}
         """
+
+
+# Branch C reads the GWAS without reference-panel harmonisation. That step
+# drops every palindromic SNP (about 1.1 M in PGC3 schizophrenia) and every
+# SNP missing from the panel; Branch C matches alleles against each eQTL
+# source itself and keeps a palindromic SNP only when allele frequencies
+# confirm its strand. Same QC, build and sample-size handling as prepare_gwas.
+rule prepare_gwas_mr:
+    input:
+        gwas=config["study"]["gwas_input"],
+    output:
+        parquet=f"{PREP_DIR}/gwas_mr.parquet",
+        meta=f"{PREP_DIR}/gwas_mr.meta.json",
+    params:
+        info_threshold=config.get("gwas_prep", {}).get("info_threshold", 0.6),
+        maf_threshold=config.get("gwas_prep", {}).get("maf_threshold", 0.01),
+        genome_build_flag=opt_flag(
+            "--genome-build", config.get("study", {}).get("genome_build")
+        ),
+        trait_type_flag=opt_flag(
+            "--trait-type", config.get("study", {}).get("trait_type")
+        ),
+        sample_size_flag=opt_flag(
+            "--sample-size", config.get("study", {}).get("sample_size")
+        ),
+        n_cases_flag=opt_flag(
+            "--n-cases", config.get("study", {}).get("n_cases")
+        ),
+        n_controls_flag=opt_flag(
+            "--n-controls", config.get("study", {}).get("n_controls")
+        ),
+        population_prevalence_flag=opt_flag(
+            "--population-prevalence", config.get("study", {}).get("population_prevalence")
+        ),
+        liftover_flag=opt_flag(
+            "--liftover-to", config.get("gwas_prep", {}).get("liftover_to")
+        ),
+        chain_flag=opt_flag(
+            "--chain-file", config.get("reference", {}).get("liftover_chain")
+        ),
+        remove_mhc_flag=(
+            "--remove-mhc"
+            if config.get("gwas_prep", {}).get("remove_mhc", False)
+            else ""
+        ),
+    threads: 1
+    resources:
+        runtime=30,
+        mem_mb=16000,
+    log:
+        f"{LOG_DIR}/prepare_gwas_mr.log",
+    shell:
+        """
+        python -m repogen.data.gwas_prep \
+            --input {input.gwas} \
+            --output {output.parquet} \
+            --metadata-out {output.meta} \
+            --info-threshold {params.info_threshold} \
+            --maf-threshold {params.maf_threshold} \
+            {params.genome_build_flag} \
+            {params.trait_type_flag} \
+            {params.sample_size_flag} \
+            {params.n_cases_flag} \
+            {params.n_controls_flag} \
+            {params.population_prevalence_flag} \
+            {params.liftover_flag} \
+            {params.chain_flag} \
+            {params.remove_mhc_flag} \
+            2>&1 | tee {log}
+        """

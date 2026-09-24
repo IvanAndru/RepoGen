@@ -174,6 +174,14 @@ def check_resources(config: PipelineConfig) -> list[ResourceCheck]:
                 detail="path taken from mr.eqtl_sources, not resource_dir",
             )
         )
+        if source.allele_frequency_path is not None:
+            checks.append(
+                _file_check(
+                    f"eQTL source '{source.source}' allele frequencies", BRANCH_C,
+                    source.allele_frequency_path,
+                    detail="setup-resources entry eqtlgen_allele_frequency",
+                )
+            )
 
     return checks
 

@@ -761,6 +761,17 @@ class EQTLSourceConfig(BaseModel):
 
     source: str = Field(description="Source name: 'eqtlgen', 'metabrain_cortex', etc.")
     path: Path = Field(description="Path to eQTL summary statistics directory")
+    allele_frequency_path: Optional[Path] = Field(
+        default=None,
+        description=(
+            "eQTLGen only: the consortium's allele-frequency file "
+            "(2018-07-18_SNP_AF_for_AlleleB_combined_allele_counts_and_MAF_pos_added.txt.gz, "
+            "fetched by setup-resources). Its frequencies convert z scores to "
+            "effect sizes and give the effect-allele frequency that palindromic "
+            "SNPs are checked against. When unset, the 1000 Genomes panel's "
+            "minor-allele frequency is used and palindromic SNPs are dropped."
+        ),
+    )
     required: bool = Field(
         default=False,
         description=(
@@ -911,7 +922,13 @@ class MRConfig(BaseModel):
         description="List of eQTL sources to use. Default: eQTLGen only.",
     )
 
-    cis_window_kb: int = Field(default=1000, ge=100, description="cis-window in kb from gene TSS (±)")
+    cis_window_kb: int = Field(
+        default=1000, ge=100,
+        description=(
+            "cis-window in kb on either side of the gene position the eQTL "
+            "source reports (eQTLGen: gene centre; MetaBrain: its gene_pos column)"
+        ),
+    )
     instrument_pval: float = Field(default=5e-8, gt=0, lt=1, description="P-value threshold for instrument selection")
     clump_r2: float = Field(default=0.001, gt=0, lt=1, description="LD clumping r² threshold")
     f_stat_threshold: float = Field(default=10.0, ge=1, description="Minimum per-SNP F-statistic")

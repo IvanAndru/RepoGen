@@ -3575,3 +3575,181 @@ class TestWriteDrugMatches:
         csv = pd.read_csv(tmp_path / "mr_drug_matches.csv")
         assert csv.loc[0, "atc_codes"] == '["N05AB06"]'
         assert pd.read_parquet(tmp_path / "mr_drug_matches.parquet").shape == (1, 2)
+
+
+# ---------------------------------------------------------------------------
+# Instrument set: GWAS match before clumping, palindromic SNPs, eQTLGen AF
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from repogen.analysis.mendelian_randomisation import (  # noqa: E402
+    _build_instrument_set,
+    _coloc_shared_snps,
+    _eqtlgen_frequencies,
+    _instrument_summary,
+    _positional_join_allowed,
+    load_eqtlgen_allele_frequencies,
+)
+
+
+def _eqtl_rows(rows: list[tuple]) -> pd.DataFrame:
+    """(SNP, pos, a1, a2, beta, se, eaf) tuples as an eQTL instrument frame."""
+    df = pd.DataFrame(rows, columns=["SNP", "pos", "a1", "a2", "beta", "se", "eaf"])
+    return df.assign(gene="G1", chr=1, pval=1e-300, n=1000)
+
+
+def _gwas_rows(rows: list[tuple]) -> pd.DataFrame:
+    """(SNP, pos, A1, A2, BETA, FCON) tuples as a GWAS frame."""
+    df = pd.DataFrame(rows, columns=["SNP", "POS", "A1", "A2", "BETA", "FCON"])
+    return df.assign(CHR=1, SE=0.01, P=0.5, N=50000, MAF=0.3)
+
+
+class TestPalindromicHarmonisation:
+    def test_same_strand_frequencies_keep_the_snp(self) -> None:
+        eqtl = _eqtl_rows([("rs1", 100, "A", "T", 0.5, 0.05, 0.2)])
+        out = harmonise_gwas_eqtl(_gwas_rows([("rs1", 100, "A", "T", 0.03, 0.2)]), eqtl)
+        assert list(out["SNP"]) == ["rs1"]
+        assert out.loc[0, "beta_outcome"] == pytest.approx(0.03)
+        assert out.attrs["palindromic"]["kept"] == 1
+
+    def test_swapped_letters_flip_the_outcome(self) -> None:
+        eqtl = _eqtl_rows([("rs1", 100, "A", "T", 0.5, 0.05, 0.2)])
+        out = harmonise_gwas_eqtl(_gwas_rows([("rs1", 100, "T", "A", 0.03, 0.8)]), eqtl)
+        assert out.loc[0, "beta_outcome"] == pytest.approx(-0.03)
+
+    def test_disagreeing_frequencies_drop_the_snp(self) -> None:
+        eqtl = _eqtl_rows([("rs1", 100, "A", "T", 0.5, 0.05, 0.2)])
+        out = harmonise_gwas_eqtl(_gwas_rows([("rs1", 100, "A", "T", 0.03, 0.8)]), eqtl)
+        assert out.empty
+        assert out.attrs["palindromic"]["dropped_disagree"] == 1
+
+    def test_frequency_near_half_drops_the_snp(self) -> None:
+        eqtl = _eqtl_rows([("rs1", 100, "A", "T", 0.5, 0.05, 0.45)])
+        out = harmonise_gwas_eqtl(_gwas_rows([("rs1", 100, "A", "T", 0.03, 0.45)]), eqtl)
+        assert out.attrs["palindromic"]["dropped_near_half"] == 1
+
+    def test_missing_frequency_drops_only_palindromic_snps(self) -> None:
+        eqtl = _eqtl_rows([
+            ("rs1", 100, "A", "T", 0.5, 0.05, np.nan),
+            ("rs2", 200, "A", "G", 0.4, 0.05, np.nan),
+        ])
+        gwas = _gwas_rows([("rs1", 100, "A", "T", 0.03, 0.2), ("rs2", 200, "A", "G", 0.02, 0.2)])
+        out = harmonise_gwas_eqtl(gwas, eqtl)
+        assert list(out["SNP"]) == ["rs2"]
+        assert out.attrs["palindromic"]["dropped_no_frequency"] == 1
+
+
+class TestPositionalJoinBuild:
+    def test_positional_join_only_on_the_gwas_build(self) -> None:
+        grch37 = SimpleNamespace(genome_build="GRCh37")
+        assert _positional_join_allowed("eqtlgen", grch37)
+        assert not _positional_join_allowed("metabrain_cortex", grch37)
+        assert not _positional_join_allowed("unknown_source", grch37)
+
+    def test_cross_build_rows_never_join_by_position(self) -> None:
+        eqtl = _eqtl_rows([("rs9", 100, "A", "G", 0.5, 0.05, 0.2)])
+        gwas = _gwas_rows([("rs8", 100, "A", "G", 0.03, 0.2)])
+        assert harmonise_gwas_eqtl(gwas, eqtl, allow_positional=False).empty
+        assert len(harmonise_gwas_eqtl(gwas, eqtl, allow_positional=True)) == 1
+
+
+class TestEqtlgenAlleleFrequencies:
+    def test_loader_reads_the_consortium_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "af.txt"
+        path.write_text(
+            "SNP\thg19_chr\thg19_pos\tAlleleA\tAlleleB\tallA_total\tallAB_total\tallB_total\tAlleleB_all\n"
+            "rs1\t1\t100\tT\tG\t1\t1\t1\t0.3\n"
+        )
+        af = load_eqtlgen_allele_frequencies(path)
+        assert af.loc["rs1", "freq_b"] == pytest.approx(0.3)
+        assert af.loc["rs1", "allele_b"] == "G"
+
+    def test_effect_allele_frequency_follows_the_assessed_allele(self) -> None:
+        af = pd.DataFrame(
+            {"allele_a": ["T", "T", "T"], "allele_b": ["G", "G", "G"], "freq_b": [0.3, 0.3, 0.3]},
+            index=pd.Index(["rs1", "rs2", "rs3"], name="SNP"),
+        )
+        chunk = pd.DataFrame({"SNP": ["rs1", "rs2", "rs3", "rs4"], "a1": ["G", "T", "C", "G"]})
+        maf, eaf = _eqtlgen_frequencies(chunk, af, None)
+        np.testing.assert_allclose(eaf[:2], [0.3, 0.7])
+        assert np.isnan(eaf[2]) and np.isnan(eaf[3])
+        np.testing.assert_allclose(maf[:2], [0.3, 0.3])
+
+    def test_without_the_file_the_panel_maf_is_used(self) -> None:
+        chunk = pd.DataFrame({"SNP": ["rs1", "rs2"], "a1": ["G", "T"]})
+        maf, eaf = _eqtlgen_frequencies(chunk, None, pd.Series({"rs1": 0.2}))
+        assert maf[0] == pytest.approx(0.2) and np.isnan(maf[1])
+        assert np.isnan(eaf).all()
+
+
+class TestBuildInstrumentSet:
+    GWAS = _gwas_rows([
+        ("rs1", 100, "A", "G", 0.03, 0.2),
+        ("rs2", 200, "A", "G", 0.02, 0.2),
+        ("rs3", 300, "A", "G", 0.01, 0.2),
+    ])
+
+    def test_lead_is_largest_abs_z_among_usable_snps(self) -> None:
+        # rs0 is the strongest eQTL but absent from the GWAS; all P values tie.
+        cands = _eqtl_rows([
+            ("rs0", 50, "A", "G", 0.9, 0.05, 0.2),
+            ("rs1", 100, "A", "G", 0.3, 0.05, 0.2),
+            ("rs2", 200, "A", "G", -0.6, 0.05, 0.2),
+        ])
+        with patch("repogen.analysis.mendelian_randomisation.clump_instruments",
+                   side_effect=lambda inst, *a, **k: inst) as clump:
+            out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
+        assert info["lead_instrument_snp"] == "rs2"
+        assert list(out["SNP"]) == ["rs2", "rs1"]
+        ranked = clump.call_args.args[0]
+        assert list(ranked["SNP"]) == ["rs2", "rs1"] and ranked["pval"].is_monotonic_increasing
+        assert info["n_candidate_snps"] == 3 and info["n_usable_snps"] == 2
+        assert info["lead_instrument_in_panel"] is True
+
+    def test_lead_missing_from_the_panel_is_kept_alone(self) -> None:
+        cands = _eqtl_rows([
+            ("rs1", 100, "A", "G", 0.3, 0.05, 0.2),
+            ("rs2", 200, "A", "G", 0.6, 0.05, 0.2),
+            ("rs3", 300, "A", "G", 0.5, 0.05, 0.2),
+        ])
+        with patch("repogen.analysis.mendelian_randomisation.clump_instruments",
+                   side_effect=lambda inst, *a, **k: inst[inst["SNP"] != "rs2"]):
+            out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
+        assert list(out["SNP"]) == ["rs2"]
+        assert info["lead_instrument_in_panel"] is False
+
+    def test_single_usable_snp_needs_no_clumping(self) -> None:
+        cands = _eqtl_rows([("rs1", 100, "A", "G", 0.3, 0.05, 0.2)])
+        with patch("repogen.analysis.mendelian_randomisation.clump_instruments") as clump:
+            out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
+        clump.assert_not_called()
+        assert list(out["SNP"]) == ["rs1"] and info["lead_instrument_in_panel"] is None
+
+
+class TestColocSharedSnps:
+    def test_mismatched_alleles_and_repeats_are_dropped(self) -> None:
+        # rs1 appears twice; rs2 is C/A in the eQTL data but A/G in the GWAS,
+        # which no strand or orientation reconciles.
+        eqtl = pd.DataFrame({
+            "SNP": ["rs1", "rs1", "rs2"], "chr": [1, 1, 1], "pos": [100, 100, 200],
+            "a1": ["A", "A", "C"], "a2": ["G", "G", "A"], "beta": [0.1, 0.1, 0.2], "se": [0.05] * 3,
+        })
+        gwas = _gwas_rows([("rs1", 100, "A", "G", 0.03, 0.2), ("rs2", 200, "A", "G", 0.02, 0.2)])
+        shared = _coloc_shared_snps(eqtl, gwas)
+        assert list(shared["SNP"]) == ["rs1"]
+
+
+class TestInstrumentSummary:
+    def test_sums_per_source(self) -> None:
+        rows = [
+            {"eqtl_source": "eqtlgen", "palindromic_kept": 2, "lead_instrument_in_panel": False,
+             "lead_instrument_palindromic": True, "instruments_beyond_100kb": True},
+            {"eqtl_source": "eqtlgen", "palindromic_kept": 1, "lead_instrument_in_panel": None},
+            {"eqtl_source": "metabrain_cortex", "palindromic_kept": 5},
+        ]
+        s = _instrument_summary(rows, "eqtlgen")
+        assert s["palindromic_kept"] == 3
+        assert s["n_genes_lead_outside_panel"] == 1
+        assert s["n_genes_palindromic_lead"] == 1
+        assert s["n_genes_instruments_beyond_100kb"] == 1
