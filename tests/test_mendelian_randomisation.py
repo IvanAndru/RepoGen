@@ -3619,6 +3619,7 @@ from repogen.analysis.mendelian_randomisation import (  # noqa: E402
     _build_instrument_set,
     _coloc_shared_snps,
     _eqtlgen_frequencies,
+    _in_ld_panel,
     _instrument_summary,
     _positional_join_allowed,
     load_eqtlgen_allele_frequencies,
@@ -3739,7 +3740,9 @@ class TestBuildInstrumentSet:
         assert info["n_candidate_snps"] == 3 and info["n_usable_snps"] == 2
         assert info["lead_instrument_in_panel"] is True
 
-    def test_lead_missing_from_the_panel_is_kept_alone(self) -> None:
+    def test_snps_missing_from_the_panel_drop_out_at_clumping(self) -> None:
+        # rs2 is the strongest usable SNP but not in the panel, so PLINK
+        # drops it; the lead is the strongest panel SNP.
         cands = _eqtl_rows([
             ("rs1", 100, "A", "G", 0.3, 0.05, 0.2),
             ("rs2", 200, "A", "G", 0.6, 0.05, 0.2),
@@ -3748,15 +3751,51 @@ class TestBuildInstrumentSet:
         with patch("repogen.analysis.mendelian_randomisation.clump_instruments",
                    side_effect=lambda inst, *a, **k: inst[inst["SNP"] != "rs2"]):
             out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
-        assert list(out["SNP"]) == ["rs2"]
-        assert info["lead_instrument_in_panel"] is False
+        assert list(out["SNP"]) == ["rs3", "rs1"]
+        assert info["lead_instrument_snp"] == "rs3" and info["lead_instrument_in_panel"] is True
+        assert info["n_usable_snps"] == 3
 
-    def test_single_usable_snp_needs_no_clumping(self) -> None:
+    def test_no_usable_snp_in_the_panel_leaves_no_instruments(self) -> None:
+        cands = _eqtl_rows([
+            ("rs1", 100, "A", "G", 0.3, 0.05, 0.2),
+            ("rs2", 200, "A", "G", 0.6, 0.05, 0.2),
+        ])
+        with patch("repogen.analysis.mendelian_randomisation.clump_instruments",
+                   side_effect=lambda inst, *a, **k: inst.iloc[0:0]):
+            out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
+        assert out.empty and info["lead_instrument_snp"] is None
+        assert info["n_usable_snps"] == 2
+
+    @pytest.mark.parametrize("in_panel", [True, False, None])
+    def test_single_usable_snp_needs_no_clumping(self, in_panel) -> None:
+        gwas = self.GWAS if in_panel is None else self.GWAS.assign(IN_PANEL=in_panel)
         cands = _eqtl_rows([("rs1", 100, "A", "G", 0.3, 0.05, 0.2)])
         with patch("repogen.analysis.mendelian_randomisation.clump_instruments") as clump:
-            out, info = _build_instrument_set(cands, self.GWAS, MRConfig(), Path("ref"), Path("plink"))
+            out, info = _build_instrument_set(cands, gwas, MRConfig(), Path("ref"), Path("plink"))
         clump.assert_not_called()
-        assert list(out["SNP"]) == ["rs1"] and info["lead_instrument_in_panel"] is None
+        assert list(out["SNP"]) == ["rs1"] and info["lead_instrument_in_panel"] is in_panel
+
+
+class TestInLdPanel:
+    GWAS = pd.DataFrame({"SNP": ["rs1", "rs2", "rs3", None], "CHR": [1, 1, 2, 2]})
+
+    @staticmethod
+    def _bim(path: Path, rows: list[tuple]) -> None:
+        path.write_text("".join(f"{c}\t{s}\t0\t{p}\tA\tG\n" for c, s, p in rows))
+
+    def test_split_panel_matches_within_the_chromosome(self, tmp_path: Path) -> None:
+        ref = tmp_path / "ref"
+        for chrom in range(1, 23):
+            for ext in (".bed", ".fam"):
+                Path(f"{ref}.chr{chrom}{ext}").write_text("")
+            rows = {1: [(1, "rs1", 100), (1, "rs3", 300)], 2: [(2, "rs2", 200)]}.get(chrom, [(chrom, "rs9", 1)])
+            self._bim(Path(f"{ref}.chr{chrom}.bim"), rows)
+        assert list(_in_ld_panel(self.GWAS, ref)) == [True, False, False, False]
+
+    def test_full_panel_when_not_split(self, tmp_path: Path) -> None:
+        ref = tmp_path / "ref"
+        self._bim(Path(f"{ref}.bim"), [(1, "rs1", 100), (2, "rs3", 300)])
+        assert list(_in_ld_panel(self.GWAS, ref)) == [True, False, True, False]
 
 
 class TestColocSharedSnps:

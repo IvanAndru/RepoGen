@@ -222,6 +222,44 @@ def ensure_ref_split(bfile_full_path: Path, plink_binary: Path) -> None:
             Path(f"{tmp}{ext}").unlink(missing_ok=True)
 
 
+def _bim_snp_ids(bim_path: Path) -> pd.Series:
+    return pd.read_csv(bim_path, sep="\t", header=None, usecols=[1], dtype=str).iloc[:, 0]
+
+
+def _ids_in(snps: pd.Series, ids: pd.Series) -> np.ndarray:
+    """Whether each of ``snps`` is among ``ids``, by a hash join.
+
+    ``Series.isin`` turns each Arrow-backed value it searches for into a
+    Python object first, over a minute for a panel's 22.7 million IDs.
+    """
+    left = pd.DataFrame({"SNP": snps.reset_index(drop=True)})
+    left["row"] = np.arange(len(left))
+    right = ids.dropna().drop_duplicates().to_frame("SNP")
+    found = left.dropna(subset=["SNP"]).merge(right, on="SNP", how="inner")["row"]
+    in_ids = np.zeros(len(left), dtype=bool)
+    in_ids[found.to_numpy()] = True
+    return in_ids
+
+
+def _in_ld_panel(gwas_df: pd.DataFrame, bfile_full_path: Path) -> np.ndarray:
+    """Whether each GWAS SNP is in the LD panel clumping reads, by SNP ID.
+
+    Read one chromosome at a time from the split panel when every autosome
+    has one, matching each GWAS row against its own chromosome as clumping
+    does; otherwise from the full ``.bim``.
+    """
+    snps = gwas_df["SNP"]
+    if all(_chromosome_bfile(bfile_full_path, c) is not None for c in _SPLIT_CHROMOSOMES):
+        chroms = pd.to_numeric(gwas_df["CHR"], errors="coerce").to_numpy(dtype=float)
+        in_panel = np.zeros(len(gwas_df), dtype=bool)
+        for chrom in _SPLIT_CHROMOSOMES:
+            rows = np.flatnonzero(chroms == chrom)
+            ids = _bim_snp_ids(Path(f"{_chromosome_bfile(bfile_full_path, chrom)}.bim"))
+            in_panel[rows] = _ids_in(snps.iloc[rows], ids)
+        return in_panel
+    return _ids_in(snps, _bim_snp_ids(Path(f"{bfile_full_path}.bim")))
+
+
 # ---------------------------------------------------------------------------
 # eQTL loading
 # ---------------------------------------------------------------------------
@@ -1504,11 +1542,13 @@ def _build_instrument_set(
     Every candidate is harmonised with the GWAS before clumping, so a strong
     eQTL SNP the GWAS lacks cannot clump away its usable neighbours, as SMR
     likewise takes its top SNP among those both data sets share (Zhu et al.
-    2016). The lead instrument is the usable SNP with the
-    largest eQTL |z|, ties broken by SNP ID; P values are not used because
-    eQTLGen floors them, which left the choice among ties to file order.
-    Clumping ranks by the same |z|. PLINK cannot clump a SNP missing from
-    the reference panel, so a lead missing from the panel is kept alone.
+    2016). Usable SNPs are ranked by eQTL |z|, ties broken by SNP ID; P
+    values are not used because eQTLGen floors them, which left the choice
+    among ties to file order. PLINK clumps only SNPs in the LD reference
+    panel, so when several SNPs are usable the instruments are the clumped
+    panel SNPs and the lead is the first index SNP, the strongest of them;
+    a gene with none in the panel has no instruments. A single usable SNP
+    needs no clumping and is kept whether or not the panel has it.
 
     Returns the harmonised instrument rows, lead first, and the per-gene
     counts and flags reported in the results.
@@ -1534,32 +1574,32 @@ def _build_instrument_set(
         harmonised.assign(abs_z=abs_z)
         .sort_values(["abs_z", "SNP"], ascending=[False, True], kind="mergesort")
         .drop_duplicates(subset="SNP", keep="first")
+        .drop(columns="abs_z")
         .reset_index(drop=True)
     )
-    lead_snp = usable.loc[0, "SNP"]
     info["n_usable_snps"] = len(usable)
-    info["lead_instrument_snp"] = lead_snp
-    info["lead_instrument_palindromic"] = bool(usable.loc[0, "palindromic"])
     if len(usable) == 1:
-        return usable.drop(columns="abs_z"), info
-
-    # PLINK orders index SNPs by the P column; a rank-based value keeps the
-    # |z| order and stays far below --clump-p2 (0.01).
-    to_clump = pd.DataFrame({"SNP": usable["SNP"], "pval": (np.arange(len(usable)) + 1) * 1e-12})
-    clumped = clump_instruments(
-        to_clump, bfile_full_path,
-        clump_r2=config.clump_r2,
-        clump_kb=config.cis_window_kb,
-        plink_binary=plink_binary,
-        gene_chr=gene_chr,
-    )
-    retained = set(clumped["SNP"])
-    info["lead_instrument_in_panel"] = lead_snp in retained
-    if lead_snp in retained:
-        instruments = usable.loc[usable["SNP"].isin(retained)]
+        instruments = usable
+        in_panel = usable.loc[0, "in_panel"]
+        info["lead_instrument_in_panel"] = None if pd.isna(in_panel) else bool(in_panel)
     else:
-        instruments = usable.iloc[:1]
-    return instruments.drop(columns="abs_z").reset_index(drop=True), info
+        # PLINK orders index SNPs by the P column; a rank-based value keeps
+        # the |z| order and stays far below --clump-p2 (0.01).
+        to_clump = pd.DataFrame({"SNP": usable["SNP"], "pval": (np.arange(len(usable)) + 1) * 1e-12})
+        clumped = clump_instruments(
+            to_clump, bfile_full_path,
+            clump_r2=config.clump_r2,
+            clump_kb=config.cis_window_kb,
+            plink_binary=plink_binary,
+            gene_chr=gene_chr,
+        )
+        instruments = usable.loc[usable["SNP"].isin(set(clumped["SNP"]))].reset_index(drop=True)
+        if instruments.empty:
+            return instruments, info
+        info["lead_instrument_in_panel"] = True
+    info["lead_instrument_snp"] = instruments.loc[0, "SNP"]
+    info["lead_instrument_palindromic"] = bool(instruments.loc[0, "palindromic"])
+    return instruments, info
 
 
 def _coloc_shared_snps(
@@ -1633,7 +1673,7 @@ def harmonise_gwas_eqtl(
     if instruments.empty:
         return pd.DataFrame()
 
-    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF", "FCON"]
+    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF", "FCON", "IN_PANEL"]
     gwas_cols = [c for c in gwas_cols if c in gwas_df.columns]
     merged = _merge_eqtl_gwas_two_stage(
         instruments, gwas_df, gwas_cols, suffixes=("_exp", "_out"), lookup=lookup,
@@ -1699,6 +1739,7 @@ def harmonise_gwas_eqtl(
         "n_outcome": merged["N"].values if "N" in merged.columns else np.nan,
         "maf": merged["MAF"].values if "MAF" in merged.columns else np.nan,
         "palindromic": palindromic[keep],
+        "in_panel": merged["IN_PANEL"].values if "IN_PANEL" in merged.columns else None,
     })
     result.attrs["palindromic"] = counts
 
@@ -3263,7 +3304,12 @@ def run_mendelian_randomisation(
         100.0 * n_resolved / max(len(gwas_df), 1),
         ", ".join(f"{k}={v}" for k, v in maf_counters.items()),
     )
-    # Built after the MAF column is added; gwas_df is not modified again.
+    gwas_df["IN_PANEL"] = _in_ld_panel(gwas_df, bfile_full_path)
+    logger.info(
+        "LD panel: %d / %d GWAS SNPs present", int(gwas_df["IN_PANEL"].sum()), len(gwas_df),
+    )
+    # Built after the MAF and IN_PANEL columns are added; gwas_df is not
+    # modified again.
     gwas_lookup = _GwasJoinIndex(gwas_df)
 
     all_results: list[dict] = []
