@@ -1347,6 +1347,27 @@ def _complement_allele(allele: str) -> str:
     return "".join(COMPLEMENT.get(b, b) for b in allele)
 
 
+class _SortedKeys:
+    """Rows holding each key, found by bisection in a sorted copy of the keys.
+
+    A pandas index answers a lookup by hashing only while its keys are
+    unique; with repeated keys (chr:pos at multi-allelic sites) it scans all
+    of them on every call. Bisection costs the same either way.
+    """
+
+    def __init__(self, keys: np.ndarray) -> None:
+        present = np.flatnonzero(pd.notna(keys))
+        self._rows = present[np.argsort(keys[present], kind="stable")]
+        self._sorted = keys[self._rows]
+
+    def rows(self, targets: pd.Series) -> np.ndarray:
+        wanted = pd.unique(targets.dropna().to_numpy())
+        lo = np.searchsorted(self._sorted, wanted, side="left")
+        hi = np.searchsorted(self._sorted, wanted, side="right")
+        found = [self._rows[a:b] for a, b in zip(lo, hi) if b > a]
+        return np.sort(np.concatenate(found)) if found else np.empty(0, dtype=np.intp)
+
+
 class _GwasJoinIndex:
     """Row positions of the GWAS by rsID and by chr:pos, built once per run.
 
@@ -1354,28 +1375,37 @@ class _GwasJoinIndex:
     gives the same frame as joining against the whole GWAS: an inner join
     keeps just the matching rows, in the order of the eQTL rows, and the
     returned positions keep the GWAS order among them. It saves copying the
-    GWAS and rebuilding its chr:pos keys for every gene. The hash tables are
-    built here, in the calling thread, so worker threads only read them.
+    GWAS and rebuilding its chr:pos keys for every gene. Everything is built
+    here, in the calling thread; worker threads only read it.
     """
 
     def __init__(self, gwas_df: pd.DataFrame) -> None:
-        has_snp = gwas_df["SNP"].notna().to_numpy()
-        self._snp_rows = np.flatnonzero(has_snp)
-        self._snp_index = pd.Index(gwas_df["SNP"].to_numpy()[has_snp])
+        self._snps = _SortedKeys(gwas_df["SNP"].to_numpy())
         self.pos_keys = (
             gwas_df["CHR"].astype(str) + ":" + gwas_df["POS"].astype(str)
         ).to_numpy()
-        self._pos_index = pd.Index(self.pos_keys)
-        self._snp_index.get_indexer_for([])
-        self._pos_index.get_indexer_for([])
+        self._positions = _SortedKeys(self.pos_keys)
 
     def rows_for_snps(self, snps: pd.Series) -> np.ndarray:
-        hits = self._snp_index.get_indexer_for(pd.unique(snps.to_numpy()))
-        return np.sort(self._snp_rows[hits[hits >= 0]])
+        return self._snps.rows(snps)
 
     def rows_for_positions(self, keys: pd.Series) -> np.ndarray:
-        hits = self._pos_index.get_indexer_for(pd.unique(keys.to_numpy()))
-        return np.sort(hits[hits >= 0])
+        return self._positions.rows(keys)
+
+
+def _contiguous_string_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Store each Arrow-backed string column as a single chunk.
+
+    Parquet is read into many chunks per column, and taking a few rows from
+    a chunked Arrow column costs time in proportion to the whole column, so
+    every per-gene join would pay for millions of GWAS rows. Values and
+    dtypes are unchanged.
+    """
+    for col in df.columns:
+        dtype = df[col].dtype
+        if isinstance(dtype, pd.StringDtype) and dtype.storage == "pyarrow":
+            df[col] = pd.Series(df[col].to_numpy(), index=df.index, dtype=dtype)
+    return df
 
 
 def _merge_eqtl_gwas_two_stage(
@@ -1645,9 +1675,11 @@ def harmonise_gwas_eqtl(
     keep = (compatible & ~palindromic) | pal_keep
     flip_sign = np.where(palindromic, flipped, flipped | m["comp_flipped"])
 
+    # Expected for most genes now that every candidate is harmonised (e.g. the
+    # second allele pair of a multi-allelic SNP), so not a warning.
     n_excluded_nomatch = int((~compatible & ~palindromic).sum())
     if n_excluded_nomatch > 0:
-        logger.warning("Excluded %d SNPs with incompatible alleles", n_excluded_nomatch)
+        logger.debug("Excluded %d SNPs with incompatible alleles", n_excluded_nomatch)
 
     merged = merged.loc[keep].copy()
     flip_sign = flip_sign[keep]
@@ -3218,7 +3250,7 @@ def run_mendelian_randomisation(
     ensure_ref_split(bfile_full_path, plink_binary)
 
     logger.info("Loading GWAS summary statistics from %s", gwas_path)
-    gwas_df = pd.read_parquet(gwas_path)
+    gwas_df = _contiguous_string_columns(pd.read_parquet(gwas_path))
     if config.coloc_enabled:
         _validate_coloc_calibration_config(config, gwas_metadata)
 

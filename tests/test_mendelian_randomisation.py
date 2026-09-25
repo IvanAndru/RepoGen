@@ -3420,6 +3420,7 @@ class TestMhcSensitivityOutput:
 from repogen.analysis.mendelian_randomisation import (  # noqa: E402
     _GwasJoinIndex,
     _chromosome_bfile,
+    _contiguous_string_columns,
     _find_eqtlgen_file,
     _merge_eqtl_gwas_two_stage,
     _write_drug_matches,
@@ -3491,6 +3492,37 @@ class TestGwasJoinIndex:
         )
         assert (plain["SNP"] == "rs4").sum() == 2
         pd.testing.assert_frame_equal(plain, indexed)
+
+    def test_repeated_rsids_join_every_row(self) -> None:
+        eqtl, gwas = _join_fixtures()
+        extra = gwas.iloc[[1]].assign(A2="C", BETA=0.08)
+        gwas = pd.concat([extra, gwas], ignore_index=True)
+        plain = _merge_eqtl_gwas_two_stage(eqtl, gwas, self.GWAS_COLS)
+        indexed = _merge_eqtl_gwas_two_stage(
+            eqtl, gwas, self.GWAS_COLS, lookup=_GwasJoinIndex(gwas),
+        )
+        assert list(plain.loc[plain["SNP"] == "rs1", "A2"]) == ["C", "G"]
+        pd.testing.assert_frame_equal(plain, indexed)
+
+    def test_lookup_returns_gwas_rows_in_file_order(self) -> None:
+        _, gwas = _join_fixtures()
+        lookup = _GwasJoinIndex(gwas)
+        keys = pd.Series(["3:700", "1:50", "1:400", "9:9", None])
+        assert list(lookup.rows_for_positions(keys)) == [0, 3, 5]
+        assert list(lookup.rows_for_snps(pd.Series(["rs7", "rs0", "rs3"]))) == [0, 5]
+        assert len(lookup.rows_for_snps(pd.Series([], dtype=object))) == 0
+
+
+class TestContiguousStringColumns:
+    def test_values_and_dtype_kept_in_one_chunk(self) -> None:
+        pytest.importorskip("pyarrow")
+        parts = [pd.Series(["rs1", None]), pd.Series(["rs3"])]
+        snp = pd.concat([p.astype("string[pyarrow]") for p in parts], ignore_index=True)
+        df = pd.DataFrame({"SNP": snp, "BETA": [0.1, 0.2, 0.3]})
+        assert df["SNP"].array.__arrow_array__().num_chunks == 2
+        out = _contiguous_string_columns(df.copy())
+        pd.testing.assert_frame_equal(out, df)
+        assert out["SNP"].array.__arrow_array__().num_chunks == 1
 
 
 class TestFindEqtlgenFile:
