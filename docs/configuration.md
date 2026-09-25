@@ -304,11 +304,15 @@ the GWAS's genome build, with matching alleles. A palindromic SNP (A/T or
 C/G) is kept only when the eQTL and GWAS frequencies of its effect allele
 (MetaBrain's `eaf`, eQTLGen's allele-frequency file, the GWAS control
 frequency `FCON`) are both at least 0.08 from 0.5 and on the same side of
-it. The lead instrument is the usable SNP with the largest eQTL |z|, and LD
-clumping ranks by the same |z| (eQTLGen floors its P values, so ranking by P
-left ties to file order). Branch C therefore reads its own GWAS preparation,
+it. Branch C therefore reads its own GWAS preparation,
 `prepare_data/gwas_mr.parquet`, which skips reference-panel harmonisation,
 since that step removes every palindromic SNP.
+
+LD clumping ranks the usable SNPs by eQTL |z| (eQTLGen floors its P values,
+so ranking by P left ties to file order). PLINK clumps only SNPs in the LD
+reference panel, so when a gene has several usable SNPs its instruments are
+the clumped panel SNPs and the lead instrument is the strongest of them; a
+gene with a single usable SNP keeps it whether or not the panel has it.
 
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish

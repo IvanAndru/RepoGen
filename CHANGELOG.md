@@ -16,7 +16,8 @@ All notable changes to RepoGen are recorded here. The format follows
   matched to the GWAS before LD clumping, so a strong eQTL SNP missing from
   the GWAS no longer clumps away its usable neighbours; the lead instrument
   and the clumping order follow the eQTL |z| rather than eQTLGen's floored P
-  values. Palindromic SNPs are kept when allele frequencies in the eQTL data
+  values, and where clumping is needed only SNPs in the LD reference panel
+  are kept. Palindromic SNPs are kept when allele frequencies in the eQTL data
   and the GWAS confirm their strand, and a position join is attempted only
   between data on the same genome build. Results change.
 
