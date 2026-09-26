@@ -1,7 +1,7 @@
 rule mendelian_randomisation:
     input:
-        gwas=f"{PREP_DIR}/gwas_standardized.parquet",
-        gwas_meta=f"{PREP_DIR}/gwas_standardized.meta.json",
+        gwas=f"{PREP_DIR}/gwas_mr.parquet",
+        gwas_meta=f"{PREP_DIR}/gwas_mr.meta.json",
         drug_targets=f"{DRUG_DIR}/drug_targets.parquet",
     output:
         results=f"{MR_DIR}/mr_results.parquet",
@@ -13,7 +13,7 @@ rule mendelian_randomisation:
         mr_dir=MR_DIR,
     threads: int(config.get("mr", {}).get("rule_threads") or config.get("mr", {}).get("n_workers", 4))
     resources:
-        runtime=720,
+        runtime=360,
         mem_mb=32000,
     log:
         f"{LOG_DIR}/mendelian_randomisation.log",

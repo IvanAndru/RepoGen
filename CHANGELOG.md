@@ -12,6 +12,27 @@ All notable changes to RepoGen are recorded here. The format follows
   and by position once per run instead of being copied for every gene, and
   PLINK clumping reads a per-chromosome copy of the reference panel, written
   beside it on first use with allele order kept.
+- Branch C chooses instruments among SNPs the GWAS can use. Candidates are
+  matched to the GWAS before LD clumping, so a strong eQTL SNP missing from
+  the GWAS no longer clumps away its usable neighbours; the lead instrument
+  and the clumping order follow the eQTL |z| rather than eQTLGen's floored P
+  values, and where clumping is needed only SNPs in the LD reference panel
+  are kept. Palindromic SNPs are kept when allele frequencies in the eQTL data
+  and the GWAS confirm their strand, and a position join is attempted only
+  between data on the same genome build. Results change.
+
+### Added
+
+- `prepare_data/gwas_mr.parquet`, the GWAS preparation Branch C reads: the
+  same QC as `gwas_standardized.parquet` without reference-panel
+  harmonisation, which removes every palindromic SNP.
+- The setup-resources entry `eqtlgen_allele_frequency` and the config key
+  `mr.eqtl_sources[].allele_frequency_path`: eQTLGen's own allele
+  frequencies, used for its z-to-beta conversion and the palindromic check.
+- Per-gene result columns describing the instrument set: the lead
+  instrument, whether it is palindromic or outside the LD panel, candidate
+  and usable SNP counts, palindromic SNPs kept and dropped, and the distance
+  from the gene to the nearest instrument.
 
 ### Fixed
 

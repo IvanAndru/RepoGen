@@ -278,8 +278,9 @@ per-tissue nulls are behaving.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `eqtl_sources` | - | `eqtlgen`, `metabrain`, or both |
-| `cis_window_kb` | `1000` | cis region around each gene |
+| `eqtl_sources` | - | `eqtlgen`, `metabrain`, or both; each has `source`, `path`, and optionally `allele_frequency_path`, `required`, `min_result_fraction` |
+| `eqtl_sources[].allele_frequency_path` | `null` | eQTLGen only: its allele-frequency file (setup-resources `eqtlgen_allele_frequency`); without it the 1000 Genomes MAF is used and palindromic SNPs are dropped |
+| `cis_window_kb` | `1000` | cis region around the gene position the eQTL source reports |
 | `instrument_pval` | `5e-08` | Instrument selection threshold |
 | `clump_r2` | `0.001` | LD clumping threshold |
 | `f_stat_threshold` | `10.0` | Weak-instrument filter |
@@ -297,22 +298,38 @@ per-tissue nulls are behaving.
 | `n_workers` | `1` | Parallel workers for the gene loop |
 | `rule_threads` | `null` | CPUs requested for the MR rule; defaults to the rule's own budget |
 
+Instruments are chosen among SNPs the GWAS can use. Every candidate is matched
+to the GWAS first, by rsID, and by position only when the eQTL source is on
+the GWAS's genome build, with matching alleles. A palindromic SNP (A/T or
+C/G) is kept only when the eQTL and GWAS frequencies of its effect allele
+(MetaBrain's `eaf`, eQTLGen's allele-frequency file, the GWAS control
+frequency `FCON`) are both at least 0.08 from 0.5 and on the same side of
+it. Branch C therefore reads its own GWAS preparation,
+`prepare_data/gwas_mr.parquet`, which skips reference-panel harmonisation,
+since that step removes every palindromic SNP.
+
+LD clumping ranks the usable SNPs by eQTL |z| (eQTLGen floors its P values,
+so ranking by P left ties to file order). PLINK clumps only SNPs in the LD
+reference panel, so when a gene has several usable SNPs its instruments are
+the clumped panel SNPs and the lead instrument is the strongest of them; a
+gene with a single usable SNP keeps it whether or not the panel has it.
+
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish
 a genuinely shared causal variant from two distinct variants in LD, which is
 the most common way cis-MR produces false positives.
 
 Branch C is the slowest stage. On CREATE, a full PGC3 schizophrenia run over
-17,189 genes takes about **2.1 hours** with 4 workers (about 330 genes/min),
-peaking at 9.7 GB in the Python process. The first run also writes a
+18,501 genes takes about **1.3 hours** with 4 workers (about 590 genes/min),
+peaking at 8.2 GB in the Python process. The first run also writes a
 per-chromosome copy of the LD reference panel beside it, which takes a few
 minutes once. Raise `n_workers` (with `rule_threads` to match) if your
 scheduler will give you the cores.
 
 `mhc_sensitivity` reruns the whole analysis with MHC genes dropped and writes
 it to `mr/sensitivity/mhc_excluded/`. It is worth leaving on: in the run above
-it showed 215 significant genes overall versus 179 outside the MHC, while the
-high-confidence count was 25 either way, which is exactly the reassurance you
+it showed 251 significant genes overall versus 214 outside the MHC, while the
+high-confidence count was 31 either way, which is exactly the reassurance you
 want that the headline result is not an artefact of MHC long-range LD.
 
 Steiger filtering is skipped for any gene when `study.population_prevalence`
