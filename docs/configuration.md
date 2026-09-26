@@ -320,16 +320,16 @@ a genuinely shared causal variant from two distinct variants in LD, which is
 the most common way cis-MR produces false positives.
 
 Branch C is the slowest stage. On CREATE, a full PGC3 schizophrenia run over
-17,189 genes takes about **2.1 hours** with 4 workers (about 330 genes/min),
-peaking at 9.7 GB in the Python process. The first run also writes a
+18,501 genes takes about **1.3 hours** with 4 workers (about 590 genes/min),
+peaking at 8.2 GB in the Python process. The first run also writes a
 per-chromosome copy of the LD reference panel beside it, which takes a few
 minutes once. Raise `n_workers` (with `rule_threads` to match) if your
 scheduler will give you the cores.
 
 `mhc_sensitivity` reruns the whole analysis with MHC genes dropped and writes
 it to `mr/sensitivity/mhc_excluded/`. It is worth leaving on: in the run above
-it showed 215 significant genes overall versus 179 outside the MHC, while the
-high-confidence count was 25 either way, which is exactly the reassurance you
+it showed 251 significant genes overall versus 214 outside the MHC, while the
+high-confidence count was 31 either way, which is exactly the reassurance you
 want that the headline result is not an artefact of MHC long-range LD.
 
 Steiger filtering is skipped for any gene when `study.population_prevalence`
