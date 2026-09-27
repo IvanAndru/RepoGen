@@ -87,8 +87,9 @@ def plot_mr_forest(
 
     Args:
         mr_results: DataFrame with columns: gene_symbol, eqtl_source, mr_beta,
-            mr_se, mr_pval, confidence_tier, n_instruments.
-            Optional: mr_method, mr_significant.
+            mr_se, mr_pval, confidence_tier. Optional: lead_instrument_snp,
+            the SNP whose Wald ratio each estimate is, shown beside its P
+            value; mr_significant.
         figsize: Override. None computes from number of genes.
         title: Override figure title.
         max_rows: Maximum rows to display (default 250).
@@ -100,7 +101,7 @@ def plot_mr_forest(
     Raises:
         ValueError: If mr_results is empty or missing required columns.
     """
-    required = {"gene_symbol", "eqtl_source", "mr_beta", "mr_se", "mr_pval", "confidence_tier", "n_instruments"}
+    required = {"gene_symbol", "eqtl_source", "mr_beta", "mr_se", "mr_pval", "confidence_tier"}
     _validate_columns(mr_results, required, "mr_results")
 
     df = select_forest_rows(mr_results, max_rows=max_rows)
@@ -132,10 +133,11 @@ def plot_mr_forest(
             ax.plot([ci_lo, ci_hi], [y_pos, y_pos], color=color, linewidth=1.5, zorder=2)
             ax.scatter([row.mr_beta], [y_pos], c=color, marker=marker, s=40, zorder=3, edgecolors="white", linewidths=0.5)
 
+            lead = getattr(row, "lead_instrument_snp", None)
             ax.text(
                 ax.get_xlim()[1] if ax.get_xlim()[1] != 1.0 else 1.0,
                 y_pos,
-                f"  {format_pvalue(row.mr_pval)}  k={row.n_instruments}",
+                f"  {format_pvalue(row.mr_pval)}" + (f"  {lead}" if isinstance(lead, str) and lead else ""),
                 va="center",
                 ha="left",
                 fontsize=FONT_SIZE_ANNOTATION,

@@ -46,7 +46,7 @@ from repogen.analysis.mendelian_randomisation import (
     f_statistic,
     harmonise_gwas_eqtl,
     ivw_fixed_effects,
-    ivw_random_effects,
+    ivw_multiplicative_random_effects,
     match_drugs_to_mr_gene,
     mr_egger,
     select_instruments,
@@ -112,20 +112,28 @@ class TestIVWFixedEffects:
         assert 0 < pval < 1
 
 
-class TestIVWRandomEffects:
-    def test_with_heterogeneity(self) -> None:
+class TestIVWMultiplicativeRandomEffects:
+    def test_heterogeneity_widens_the_fixed_effect_interval(self) -> None:
         bx = np.array([0.5, 0.3, 0.4])
         sx = np.array([0.1, 0.1, 0.1])
         by = np.array([0.2, -0.1, 0.5])
         sy = np.array([0.05, 0.05, 0.05])
 
-        fe_beta, _, _ = ivw_fixed_effects(bx, sx, by, sy)
-        q, q_pval = cochrans_q(bx, sx, by, sy, fe_beta)
-        assert q > 0
+        fe_beta, fe_se, _ = ivw_fixed_effects(bx, sx, by, sy)
+        q, _ = cochrans_q(bx, sx, by, sy, fe_beta)
+        mre_beta, mre_se, _ = ivw_multiplicative_random_effects(bx, sx, by, sy)
+        assert mre_beta == pytest.approx(fe_beta)
+        assert mre_se == pytest.approx(fe_se * np.sqrt(q / 2))
 
-        re_beta, re_se, re_pval = ivw_random_effects(bx, sx, by, sy)
-        assert isinstance(re_beta, float)
-        assert re_se > 0
+    def test_underdispersion_never_narrows_it(self) -> None:
+        bx = np.array([0.5, 0.3, 0.4])
+        sx = np.array([0.1, 0.1, 0.1])
+        by = bx * 0.4
+        sy = np.array([0.05, 0.05, 0.05])
+
+        _, fe_se, _ = ivw_fixed_effects(bx, sx, by, sy)
+        _, mre_se, _ = ivw_multiplicative_random_effects(bx, sx, by, sy)
+        assert mre_se == pytest.approx(fe_se)
 
 
 class TestCochransQ:
@@ -189,6 +197,121 @@ class TestWeightedMedian:
         assert abs(beta_wm - 0.4) < 0.2
 
 
+# Expected values from the estimator functions of TwoSampleMR's R/mr.R
+# (MRCIEU/TwoSampleMR commit c14776b, run in R 4.6.1): mr_ivw_fe (estimate,
+# SE, P, Q, Q P), mr_ivw, which is multiplicative random effects (estimate,
+# SE, P), mr_egger_regression (slope, SE, P, intercept, SE, P), and
+# weighted_median with weighted_median_bootstrap over 200,000 draws
+# (estimate, SE).
+_TWOSAMPLEMR = {
+    "three_snps": {
+        "bx": [0.5, 0.3, 0.4],
+        "sx": [0.05, 0.04, 0.06],
+        "by": [0.2, 0.15, 0.1],
+        "sy": [0.03, 0.03, 0.04],
+        "ivw_fe": [0.3895348837209303, 0.045749571099781394, 1.6730555605139516e-17, 3.197674418604652, 0.20213141793093575],
+        "ivw_mre": [0.3895348837209303, 0.05784810680852441, 1.6534135718005725e-11],
+        "egger": [0.25000000000000017, 0.3513909642493634, 0.6063304136168667, 0.058536585365853606, 0.14394377248467802, 0.7541138967483563],
+        "wm": [0.390120436582612, 0.06330575045489886],
+    },
+    "heterogeneous_negative_bx": {
+        "bx": [0.45, -0.32, 0.28, 0.51, 0.22],
+        "sx": [0.03, 0.04, 0.03, 0.05, 0.02],
+        "by": [0.09, -0.07, 0.05, 0.11, 0.3],
+        "sy": [0.02, 0.025, 0.02, 0.03, 0.02],
+        "ivw_fe": [0.31300561350166006, 0.02799363832873883, 5.03400109278158e-29, 147.76269894756643, 6.139192770158678e-31],
+        "ivw_mre": [0.31300561350166006, 0.1701420883871148, 0.06581642616950246],
+        "egger": [-0.4801911845480159, 0.47653325458569157, 0.3878403323776939, 0.2930770684364089, 0.1684602204639845, 0.18028318582216915],
+        "wm": [0.20569035041155015, 0.03529699444858571],
+    },
+    "underdispersed": {
+        "bx": [0.4, 0.25, 0.35, 0.3],
+        "sx": [0.02, 0.02, 0.02, 0.02],
+        "by": [0.08, 0.051, 0.069, 0.06],
+        "sy": [0.03, 0.03, 0.03, 0.03],
+        "ivw_fe": [0.19977011494252875, 0.0454858826147342, 1.123568001607686e-05, 0.002196679438058703, 0.9999726358066582],
+        "ivw_mre": [0.19977011494252875, 0.0454858826147342, 1.123568001607686e-05],
+        "egger": [0.19200000000000012, 0.2683281572999749, 0.5485338816135197, 0.0025999999999999665, 0.0884872872225158, 0.9792277398643645],
+        "wm": [0.19999999999999998, 0.05172277106023585],
+    },
+    "eqtl_scale": {
+        "bx": [0.35, 0.21, -0.18, 0.12, 0.27, 0.15],
+        "sx": [0.01, 0.012, 0.011, 0.013, 0.01, 0.012],
+        "by": [0.021, 0.015, -0.004, 0.012, 0.03, 0.002],
+        "sy": [0.004, 0.004, 0.005, 0.004, 0.004, 0.005],
+        "ivw_fe": [0.07159246599039568, 0.007440189929640589, 6.431424295751748e-22, 15.084463734621288, 0.01000746881174203],
+        "ivw_mre": [0.07159246599039568, 0.01292301824906318, 3.026126975186584e-08],
+        "egger": [0.08004166445350519, 0.042099530730007134, 0.1300514584602553, -0.002103102417312543, 0.009850000733339519, 0.8413682011549083],
+        "wm": [0.06619481494715965, 0.010485491647066364],
+    },
+}
+
+
+class TestEstimatorsMatchTwoSampleMR:
+    @pytest.fixture(params=sorted(_TWOSAMPLEMR))
+    def case(self, request) -> dict:
+        return {key: np.array(values) for key, values in _TWOSAMPLEMR[request.param].items()}
+
+    def test_ivw_fixed_and_multiplicative_random_effects(self, case) -> None:
+        bx, sx, by, sy = case["bx"], case["sx"], case["by"], case["sy"]
+        beta, se, pval = ivw_fixed_effects(bx, sx, by, sy)
+        q, q_pval = cochrans_q(bx, sx, by, sy, beta)
+        assert [beta, se, pval, q, q_pval] == pytest.approx(list(case["ivw_fe"]), rel=1e-9)
+        assert list(ivw_multiplicative_random_effects(bx, sx, by, sy)) == pytest.approx(
+            list(case["ivw_mre"]), rel=1e-9,
+        )
+
+    def test_egger(self, case) -> None:
+        e = mr_egger(case["bx"], case["sx"], case["by"], case["sy"])
+        got = [e["slope"], e["slope_se"], e["slope_pval"], e["intercept"], e["intercept_se"], e["intercept_pval"]]
+        assert got == pytest.approx(list(case["egger"]), rel=1e-9)
+
+    def test_weighted_median(self, case) -> None:
+        beta, se, _ = weighted_median(case["bx"], case["sx"], case["by"], case["sy"], n_boot=20000)
+        assert beta == pytest.approx(case["wm"][0], rel=1e-12)
+        # A bootstrap standard deviation: with 20,000 draws its Monte Carlo
+        # error is about half a percent.
+        assert se == pytest.approx(case["wm"][1], rel=0.03)
+
+
+class TestPrimaryEstimate:
+    def test_lead_wald_ratio_decides_and_multi_instrument_estimates_are_reported(self) -> None:
+        from repogen.analysis.mendelian_randomisation import _run_mr_for_gene
+
+        # Three instruments that disagree; the lead (first row) is the strongest.
+        instruments = pd.DataFrame({
+            "SNP": ["rs1", "rs2", "rs3"], "pos": [100, 200, 300],
+            "beta_exposure": [0.6, 0.4, 0.3], "se_exposure": [0.02, 0.02, 0.02],
+            "beta_outcome": [0.12, -0.05, 0.02], "se_outcome": [0.01, 0.01, 0.01],
+            "pval_exposure": [1e-50] * 3, "n_exposure": [30000] * 3, "n_outcome": [100000] * 3,
+            "maf": [0.3] * 3, "palindromic": [False] * 3, "in_panel": [True] * 3,
+        })
+        info = {
+            "n_candidate_snps": 3, "n_usable_snps": 3, "lead_instrument_snp": "rs1",
+            "lead_instrument_palindromic": False, "lead_instrument_in_panel": True,
+        }
+        meta = MagicMock()
+        meta.trait_type = "quantitative"
+        module = "repogen.analysis.mendelian_randomisation"
+        with patch(f"{module}.select_instruments", return_value=instruments.head(1)),                 patch(f"{module}._build_instrument_set", return_value=(instruments, info)):
+            result = _run_mr_for_gene(
+                gene="G1", gene_info={"chr": 1, "start": 50, "symbol": "G1"}, eqtl_df=instruments,
+                gwas_df=pd.DataFrame(), gwas_metadata=meta,
+                config=MRConfig(eqtl_sources=[EQTLSourceConfig(source="eqtlgen", path=Path("/tmp"))]),
+                bfile_full_path=Path("ref"), plink_binary=Path("plink"), source_name="eqtlgen",
+                bonf_threshold=1e-6, skip_coloc=True,
+            )
+
+        assert result["mr_method"] == "wald"
+        lead = wald_ratio(0.6, 0.02, 0.12, 0.01)
+        assert (result["mr_beta"], result["mr_se"], result["mr_pval"]) == pytest.approx(lead)
+        assert result["mr_significant"] is True
+        assert result["heterogeneity_warning"]
+        assert result["ivw_mre_se"] > result["ivw_fe_se"]
+        assert "wm_beta" in result and "egger_slope" in result
+        assert not any(key.startswith("ivw_re") for key in result)
+
+
 class TestMREdgeCases:
     def test_single_instrument_uses_wald(self) -> None:
         beta_mr, se_mr, pval = wald_ratio(0.5, 0.1, 0.2, 0.05)
@@ -206,12 +329,12 @@ class TestMREdgeCases:
         by = np.array([0.5, -0.3])
         sy = np.array([0.05, 0.05])
 
-        fe_beta, _, _ = ivw_fixed_effects(bx, sx, by, sy)
+        fe_beta, fe_se, _ = ivw_fixed_effects(bx, sx, by, sy)
         q, q_pval = cochrans_q(bx, sx, by, sy, fe_beta)
+        assert q_pval < 0.05
 
-        if q_pval < 0.05:
-            re_beta, re_se, re_pval = ivw_random_effects(bx, sx, by, sy)
-            assert isinstance(re_beta, float)
+        _, mre_se, _ = ivw_multiplicative_random_effects(bx, sx, by, sy)
+        assert mre_se > fe_se
 
 
 # ---------------------------------------------------------------------------

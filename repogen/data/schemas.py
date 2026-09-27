@@ -578,7 +578,7 @@ class MRResultRow(BaseModel):
     gene_uniprot_id: Optional[str] = None
     eqtl_source: str
     n_instruments: int
-    mr_method: str
+    mr_method: str  # "wald": the lead instrument's Wald ratio, the primary estimate
     mr_beta: float
     mr_se: float
     mr_pval: float
@@ -593,10 +593,13 @@ class MRResultRow(BaseModel):
     q_stat: Optional[float] = None
     q_pval: Optional[float] = None
     heterogeneity_warning: bool = False
+    # Descriptive, for two or more instruments: IVW with fixed effects, and
+    # with multiplicative random effects (same estimate, wider SE).
     ivw_fe_beta: Optional[float] = None
+    ivw_fe_se: Optional[float] = None
     ivw_fe_pval: Optional[float] = None
-    ivw_re_beta: Optional[float] = None
-    ivw_re_pval: Optional[float] = None
+    ivw_mre_se: Optional[float] = None
+    ivw_mre_pval: Optional[float] = None
     egger_intercept_pval: Optional[float] = None
     egger_slope: Optional[float] = None
     egger_se: Optional[float] = None
@@ -642,9 +645,10 @@ MR_RESULT_OPTIONAL: dict[str, type] = {
     "q_stat": float,
     "q_pval": float,
     "ivw_fe_beta": float,
+    "ivw_fe_se": float,
     "ivw_fe_pval": float,
-    "ivw_re_beta": float,
-    "ivw_re_pval": float,
+    "ivw_mre_se": float,
+    "ivw_mre_pval": float,
     "egger_intercept_pval": float,
     "egger_slope": float,
     "egger_se": float,
@@ -670,6 +674,20 @@ MR_RESULT_OPTIONAL: dict[str, type] = {
     "gene_start": int,
     "mhc_flag": bool,
     "mhc_flag_method": str,
+    # The instrument set: candidate and usable SNPs, the lead instrument
+    # (whether palindromic, whether in the LD panel), palindromic SNPs kept
+    # and dropped, and the distance from the gene to its instruments.
+    "n_candidate_snps": int,
+    "n_usable_snps": int,
+    "lead_instrument_snp": str,
+    "lead_instrument_palindromic": bool,
+    "lead_instrument_in_panel": bool,
+    "palindromic_kept": int,
+    "palindromic_dropped_no_frequency": int,
+    "palindromic_dropped_near_half": int,
+    "palindromic_dropped_disagree": int,
+    "min_instrument_distance_kb": float,
+    "instruments_beyond_100kb": bool,
 }
 
 
