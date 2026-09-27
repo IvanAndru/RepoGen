@@ -25,6 +25,7 @@ from repogen.analysis.mendelian_randomisation import (
     UPREGULATING_TYPES,
     _annotate_druggable_track,
     _annotate_fdr_track,
+    _apply_tested_bonferroni,
     _annotate_mhc_flag,
     _bh_fdr_finite,
     _build_drug_match_records,
@@ -34,6 +35,7 @@ from repogen.analysis.mendelian_randomisation import (
     _resolve_coloc_variance_inputs,
     _resolve_drug_matches_by_id,
     _resolve_maf,
+    _steiger_for_lead,
     _validate_coloc_calibration_config,
     _summarise_gene_verdict,
     _write_mhc_excluded_sensitivity,
@@ -50,6 +52,7 @@ from repogen.analysis.mendelian_randomisation import (
     match_drugs_to_mr_gene,
     mr_egger,
     select_instruments,
+    r2_outcome_liability,
     steiger_test,
     wald_ratio,
     weighted_median,
@@ -1150,6 +1153,30 @@ class TestTiering:
         result = assign_confidence_tiers(df)
         assert result.iloc[0]["confidence_tier"] == "medium"
 
+    def _discordant_pair(self, base_row: dict) -> pd.DataFrame:
+        blood = dict(base_row, cross_source_status="discordant")
+        brain = dict(base_row, eqtl_source="metabrain_cortex", mr_beta=-0.4,
+                     cross_source_status="discordant")
+        return pd.DataFrame([blood, brain])
+
+    def test_unset_relevant_source_leaves_conflicted_genes_undecided(self, base_row: dict) -> None:
+        result = assign_confidence_tiers(self._discordant_pair(base_row))
+        assert list(result["confidence_tier"]) == ["direction_conflict", "direction_conflict"]
+
+    def test_relevant_source_decides_conflicted_genes(self, base_row: dict) -> None:
+        result = assign_confidence_tiers(
+            self._discordant_pair(base_row), disease_relevant_source="metabrain_cortex",
+        )
+        assert list(result["confidence_tier"]) == ["direction_conflict", "medium"]
+
+    def test_tissue_discordant_marks_both_rows(self, base_row: dict) -> None:
+        blood = dict(base_row, gene_ensembl_id="G1", mr_pval=1e-10, mr_significant=True)
+        brain = dict(base_row, gene_ensembl_id="G1", eqtl_source="metabrain_cortex",
+                     mr_beta=-0.4, mr_pval=0.01, mr_significant=False)
+        other = dict(base_row, gene_ensembl_id="G2")
+        out = annotate_cross_source(pd.DataFrame([blood, brain, other]))
+        assert list(out["tissue_discordant"]) == [True, True, False]
+
     def test_direction_conflict(self, base_row: dict) -> None:
         base_row["cross_source_status"] = "discordant"
         df = pd.DataFrame([base_row])
@@ -1219,14 +1246,6 @@ class TestSteiger:
         pval, valid = steiger_test(0.05, 0.01, 30000, 100000)
         assert valid is True
         assert pval < 0.05
-
-    def test_binary_trait(self) -> None:
-        pval, valid = steiger_test(
-            0.05, 0.01, 30000, 50000,
-            trait_type="case_control", n_cases=20000, n_controls=30000,
-        )
-        assert isinstance(pval, float)
-        assert valid in (True, False)
 
     def test_wrong_direction(self) -> None:
         pval, valid = steiger_test(0.01, 0.05, 30000, 100000)
@@ -3263,16 +3282,15 @@ class TestFdrTrack:
 
     def test_columns_added(self) -> None:
         out = _annotate_fdr_track(self._frame())
-        for col in ("mr_fdr_bh_q", "mr_significant_fdr_bh",
-                    "bonferroni_threshold_tested", "mr_significant_bonferroni_tested"):
+        for col in ("mr_fdr_bh_q", "mr_significant_fdr_bh"):
             assert col in out.columns
+        assert "bonferroni_threshold_tested" not in out.columns
 
     def test_nan_pval_yields_nan_q_and_false(self) -> None:
         out = _annotate_fdr_track(self._frame())
         nan_row = out.loc[out["gene_ensembl_id"] == "R2"].iloc[0]
         assert pd.isna(nan_row["mr_fdr_bh_q"])
         assert bool(nan_row["mr_significant_fdr_bh"]) is False
-        assert bool(nan_row["mr_significant_bonferroni_tested"]) is False
 
     def test_fdr_is_per_source(self) -> None:
         # BH q for the brain 1e-8 uses n=2 finite p-values (not the global 8).
@@ -3280,14 +3298,12 @@ class TestFdrTrack:
         r0 = out.loc[out["gene_ensembl_id"] == "R0"].iloc[0]
         assert r0["mr_fdr_bh_q"] == pytest.approx(1e-8 * 2, rel=1e-6)
 
-    def test_tested_bonferroni_denominator_is_finite_count(self) -> None:
-        out = _annotate_fdr_track(self._frame())
-        # metabrain has 2 finite p-values -> threshold 0.05/2.
-        r = out.loc[out["eqtl_source"] == "metabrain"].iloc[0]
-        assert r["bonferroni_threshold_tested"] == pytest.approx(0.05 / 2)
-        # eqtlgen has 5 finite -> 0.05/5.
-        b = out.loc[out["eqtl_source"] == "eqtlgen"].iloc[0]
-        assert b["bonferroni_threshold_tested"] == pytest.approx(0.05 / 5)
+    def test_bonferroni_counts_only_genes_with_a_p_value(self) -> None:
+        rows = [{"eqtl_source": "metabrain", "mr_pval": p} for p in (1e-8, 0.03, np.nan)]
+        n_tested, threshold = _apply_tested_bonferroni(rows)
+        assert (n_tested, threshold) == (2, pytest.approx(0.05 / 2))
+        assert [r["mr_significant"] for r in rows] == [True, False, False]
+        assert all(r["bonferroni_threshold"] == pytest.approx(0.025) for r in rows)
 
     def test_primary_significant_untouched(self) -> None:
         df = self._frame()
@@ -3402,46 +3418,121 @@ class TestColocVarianceInputs:
         assert result["n_snps_coloc"] == 12
 
 
-class TestSteigerPrevalenceGating:
-    def test_no_prevalence_no_transform(self) -> None:
-        # With population_prevalence=None the binary transform must NOT fire, so
-        # the result equals the plain observed-scale call.
-        p_gated, v_gated = steiger_test(
-            0.05, 0.01, 30000, 50000,
-            trait_type="case_control", n_cases=20000, n_controls=30000,
-            population_prevalence=None,
-        )
-        p_plain, v_plain = steiger_test(0.05, 0.01, 30000, 50000)
-        assert p_gated == pytest.approx(p_plain)
-        assert v_gated == v_plain
+# get_r_from_lor from TwoSampleMR's add_rsq.r (commit c14776b, R 4.6.1) on
+# case and control frequencies consistent with the log odds ratio: (control
+# frequency, case frequency, cases, controls, prevalence, log OR, r^2).
+_TWOSAMPLEMR_LIABILITY_R2 = [
+    (0.3, 0.32, 53386, 77258, 0.004, 0.09352605801082355, 0.0005581228025954856),
+    (0.1, 0.093, 53386, 77258, 0.004, -0.08031837962566137, 0.00017640430065198837),
+    (0.45, 0.47, 30000, 30000, 0.004, 0.08052638362008784, 0.00048761303976889615),
+    (0.05, 0.06, 1000, 5000, 0.004, 0.19290366612449145, 0.0005373925516621976),
+    (0.3, 0.32, 53386, 77258, 0.0072, 0.09352605801082355, 0.0005581907540124171),
+    (0.1, 0.093, 53386, 77258, 0.0072, -0.08031837962566137, 0.00017636917060514674),
+    (0.45, 0.47, 30000, 30000, 0.0072, 0.08052638362008784, 0.0004876256139676229),
+    (0.05, 0.06, 1000, 5000, 0.0072, 0.19290366612449145, 0.0005377179189379424),
+    (0.3, 0.32, 53386, 77258, 0.01, 0.09352605801082355, 0.0005582501936474147),
+    (0.1, 0.093, 53386, 77258, 0.01, -0.08031837962566137, 0.00017633843019850665),
+    (0.45, 0.47, 30000, 30000, 0.01, 0.08052638362008784, 0.0004876366031587003),
+    (0.05, 0.06, 1000, 5000, 0.01, 0.19290366612449145, 0.0005380025961483397),
+]
 
-    def test_prevalence_applies_transform(self) -> None:
-        # Supplying a real (small) prevalence rescales r2_out -> changes the
-        # p-value. Use moderate r2/N so the two p-values are not both sub-1e-12
-        # (pytest.approx's default abs=1e-12 would otherwise call them equal).
-        p_no, _ = steiger_test(
-            0.01, 0.009, 800, 1200,
-            trait_type="case_control", n_cases=20000, n_controls=30000,
-            population_prevalence=None,
-        )
-        p_yes, _ = steiger_test(
-            0.01, 0.009, 800, 1200,
-            trait_type="case_control", n_cases=20000, n_controls=30000,
-            population_prevalence=0.01,
-        )
-        assert p_yes != pytest.approx(p_no, abs=0.0)
 
-    def test_sample_fraction_never_used_as_prevalence(self) -> None:
-        # Sanity: passing prevalence == sample fraction differs from the old
-        # (buggy) behaviour only in that it is now explicit; the point is that
-        # without prevalence there is no transform at all.
-        p_none, _ = steiger_test(
-            0.02, 0.02, 30000, 50000,
-            trait_type="case_control", n_cases=25000, n_controls=25000,
-            population_prevalence=None,
-        )
-        p_quant, _ = steiger_test(0.02, 0.02, 30000, 50000)
-        assert p_none == pytest.approx(p_quant)
+class TestSignificanceConfig:
+    def test_relevant_source_must_be_configured(self) -> None:
+        sources = [EQTLSourceConfig(source="eqtlgen", path=Path("/tmp"))]
+        assert MRConfig(eqtl_sources=sources, disease_relevant_source="eqtlgen").disease_relevant_source == "eqtlgen"
+        with pytest.raises(ValueError, match="disease_relevant_source"):
+            MRConfig(eqtl_sources=sources, disease_relevant_source="metabrain_cortex")
+
+    def test_sensitivity_prevalences_are_proportions(self) -> None:
+        with pytest.raises(ValueError, match="Prevalences"):
+            MRConfig(steiger_prevalence_sensitivity=[0.004, 1.5])
+
+
+class TestLiabilityR2:
+    @pytest.mark.parametrize("row", _TWOSAMPLEMR_LIABILITY_R2)
+    def test_matches_twosamplemr_get_r_from_lor(self, row) -> None:
+        f_controls, f_cases, _, _, prevalence, lor, r2 = row
+        assert r2_outcome_liability(lor, f_cases, f_controls, prevalence) == pytest.approx(r2, rel=1e-9)
+
+    def test_either_allele_gives_the_same_value(self) -> None:
+        a = r2_outcome_liability(0.12, 0.918, 0.909, 0.0072)
+        b = r2_outcome_liability(-0.12, 1 - 0.918, 1 - 0.909, 0.0072)
+        assert a == pytest.approx(b)
+
+
+def _lead(**kw) -> pd.Series:
+    row = {"beta_exposure": 0.0833, "beta_outcome": 0.1238, "maf": 0.091,
+           "fcas": 0.918, "fcon": 0.909, "n_exposure": 31298, "n_outcome": 58749}
+    row.update(kw)
+    return pd.Series(row)
+
+
+class TestSteigerForLead:
+    # CNNM2's lead SNP in blood (rs11191447): observed-scale Steiger called it
+    # invalid; on the liability scale it explains more of expression.
+    def test_cnnm2_is_valid_on_the_liability_scale(self) -> None:
+        out = _steiger_for_lead(_lead(), "case_control", 53386, 77258, 0.0072, [0.004, 0.01], 1, 1)
+        assert out["steiger_binary_calibration"] == "liability"
+        assert out["steiger_valid"] is True
+        assert out["r2_outcome"] < out["r2_exposure"] < 0.0012
+        assert out["steiger_invalid_all_k"] is False and out["steiger_k_sensitive"] is False
+
+    def test_invalid_at_every_prevalence_is_flagged(self) -> None:
+        out = _steiger_for_lead(_lead(beta_exposure=0.01), "case_control", 53386, 77258, 0.0072, [0.004, 0.01], 1, 1)
+        assert out["steiger_valid"] is False and out["steiger_invalid_all_k"] is True
+
+    def test_uses_cases_plus_controls_as_outcome_n(self) -> None:
+        out = _steiger_for_lead(_lead(), "case_control", 53386, 77258, 0.0072, [], 1, 1)
+        r2_exp, r2_out = out["r2_exposure"], out["r2_outcome"]
+        assert out["steiger_pval"] == pytest.approx(steiger_test(r2_exp, r2_out, 31298, 130644)[0])
+
+    def test_no_prevalence_no_test(self) -> None:
+        out = _steiger_for_lead(_lead(), "case_control", 53386, 77258, None, [0.01], 1, 1)
+        assert out["steiger_binary_calibration"] == "skipped_no_prevalence"
+        assert out["steiger_valid"] is None and np.isnan(out["steiger_pval"])
+
+    def test_quantitative_outcome_uses_genotype_variance(self) -> None:
+        out = _steiger_for_lead(_lead(), "quantitative", None, None, None, [], 1, 1)
+        assert out["steiger_binary_calibration"] == "not_applicable"
+        assert out["r2_outcome"] == pytest.approx(0.1238**2 * 2 * 0.091 * 0.909)
+        assert out["steiger_invalid_all_k"] is None
+
+
+# coloc.abf from coloc's claudia.R (commit 8f20f0b, R 4.6.1): PP.H0 to PP.H4
+# for the inputs _coloc_case builds; large_region has 12,000 SNPs, so coloc
+# lowers p1 and p2 to 1/12,001.
+_R_COLOC = {
+    "shared": [6.390889915150858e-25, 0.007343547482984242, 8.801620923884149e-26, 1.8725667605873295e-05, 0.9926377268494078],
+    "distinct": [3.5042635124034705e-33, 0.00021522017012213544, 1.627868076721221e-29, 0.9997822431999259, 2.5366299531741404e-06],
+    "exposure_only": [8.551625597807934e-23, 0.9826373082303934, 2.1935501122123724e-25, 0.00250567449229364, 0.01485701727731623],
+    "large_region": [2.1579735226843592e-18, 0.06149826474442396, 2.9720709224743284e-19, 0.007823657376553366, 0.9306780778790246],
+}
+
+
+def _coloc_case(name: str):
+    n, s1, a1, s2, a2 = {
+        "shared": (200, 100, 0.4, 100, 0.12), "distinct": (200, 50, 0.4, 150, 0.12),
+        "exposure_only": (200, 100, 0.4, None, 0.0), "large_region": (12000, 6000, 0.3, 6000, 0.1),
+    }[name]
+    i = np.arange(1, n + 1, dtype=float)
+    b1 = 0.01 * np.sin(0.7 * i)
+    se1 = 0.03 + 0.005 * (1 + np.cos(0.3 * i))
+    b2 = 0.008 * np.cos(0.5 * i)
+    se2 = 0.02 + 0.005 * (1 + np.sin(0.2 * i))
+    b1[s1 - 1] += a1
+    if s2 is not None:
+        b2[s2 - 1] += a2
+    return b1, se1, b2, se2
+
+
+class TestColocMatchesR:
+    @pytest.mark.parametrize("name", sorted(_R_COLOC))
+    def test_posteriors_equal_coloc_abf(self, name) -> None:
+        b1, se1, b2, se2 = _coloc_case(name)
+        r = coloc_abf(b1, se1, b2, se2, np.full(len(b1), 0.3), 30000, 130000, type1="quant", type2="cc")
+        got = [r["pp_h0"], r["pp_h1"], r["pp_h2"], r["pp_h3"], r["pp_h4"]]
+        assert got == pytest.approx(_R_COLOC[name], abs=1e-9)
 
 
 # ---------------------------------------------------------------------------

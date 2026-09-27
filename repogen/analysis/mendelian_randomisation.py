@@ -1673,7 +1673,7 @@ def harmonise_gwas_eqtl(
     if instruments.empty:
         return pd.DataFrame()
 
-    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF", "FCON", "IN_PANEL"]
+    gwas_cols = ["A1", "A2", "BETA", "SE", "P", "N", "CHR", "POS", "MAF", "FCAS", "FCON", "IN_PANEL"]
     gwas_cols = [c for c in gwas_cols if c in gwas_df.columns]
     merged = _merge_eqtl_gwas_two_stage(
         instruments, gwas_df, gwas_cols, suffixes=("_exp", "_out"), lookup=lookup,
@@ -1738,6 +1738,10 @@ def harmonise_gwas_eqtl(
         "n_exposure": merged["n"].values if "n" in merged.columns else np.nan,
         "n_outcome": merged["N"].values if "N" in merged.columns else np.nan,
         "maf": merged["MAF"].values if "MAF" in merged.columns else np.nan,
+        # Case and control frequencies of the GWAS allele A1, as reported;
+        # the liability-scale R^2 they enter does not depend on orientation.
+        "fcas": pd.to_numeric(merged["FCAS"], errors="coerce").values if "FCAS" in merged.columns else np.nan,
+        "fcon": pd.to_numeric(merged["FCON"], errors="coerce").values if "FCON" in merged.columns else np.nan,
         "palindromic": palindromic[keep],
         "in_panel": merged["IN_PANEL"].values if "IN_PANEL" in merged.columns else None,
     })
@@ -1905,38 +1909,30 @@ def weighted_median(
     return beta_wm, se_wm, pval
 
 
+def r2_outcome_liability(
+    lor: float, f_cases: float, f_controls: float, prevalence: float,
+) -> float:
+    """Liability variance of a case-control outcome explained by one SNP.
+
+    TwoSampleMR's get_r_from_lor with the logit model (Lee et al. 2012):
+    v / (v + pi^2 / 3), v = lor^2 p (1 - p), where p is the allele's
+    population frequency, (1 - K) f_controls + K f_cases at prevalence K.
+    Either allele gives the same value.
+    """
+    p = (1.0 - prevalence) * f_controls + prevalence * f_cases
+    v = lor**2 * p * (1.0 - p)
+    return float(v / (v + np.pi**2 / 3.0))
+
+
 def steiger_test(
     r2_exp: float, r2_out: float, n_exp: int, n_out: int,
-    trait_type: str = "quantitative",
-    n_cases: int | None = None, n_controls: int | None = None,
-    population_prevalence: float | None = None,
 ) -> tuple[float, bool]:
     """Steiger directionality test. Returns (p_value, direction_valid).
 
-    For a binary outcome the observed-scale R² is converted to the
-    liability scale using the Lee et al. 2011 transform - but ONLY when a true
-    *population* prevalence ``K`` is supplied. The sample case fraction
-    ``n_cases/(n_cases+n_controls)`` is an ascertainment proportion, NOT the
-    population prevalence (for SCZ ≈0.33 vs ≈0.01), so using it here would badly
-    mis-scale R². When ``population_prevalence`` is None the test stays on the
-    observed/binary-approximation scale (annotate-only ).
-
-        R²_liability = R²_obs · [K(1-K)]² / (z² · P(1-P))
-        z = φ(Φ⁻¹(1-K)),  P = sample case fraction,  K = population prevalence
+    Compares the SNP's correlation with the exposure and with the outcome
+    by Fisher's z, as TwoSampleMR's mr_steiger; the direction is valid when
+    the SNP explains more of the exposure.
     """
-    if (
-        trait_type == "case_control"
-        and population_prevalence is not None
-        and n_cases is not None and n_controls is not None
-    ):
-        K = float(population_prevalence)
-        P = n_cases / (n_cases + n_controls)
-        z_thresh = scipy.stats.norm.ppf(1 - K)
-        height = scipy.stats.norm.pdf(z_thresh)
-        if height > 0 and 0 < P < 1:
-            r2_out = r2_out * (K * (1 - K)) ** 2 / (height**2 * P * (1 - P))
-            r2_out = min(r2_out, 0.999)
-
     z_exp = 0.5 * np.log((1 + np.sqrt(r2_exp)) / (1 - np.sqrt(r2_exp)))
     z_out = 0.5 * np.log((1 + np.sqrt(r2_out)) / (1 - np.sqrt(r2_out)))
 
@@ -1952,6 +1948,83 @@ def steiger_test(
     direction_valid = r2_exp > r2_out
 
     return pval, direction_valid
+
+
+def _finite(row: pd.Series, col: str) -> float:
+    value = pd.to_numeric(row.get(col), errors="coerce") if col in row else np.nan
+    return float(value) if pd.notna(value) else np.nan
+
+
+def _steiger_for_lead(
+    lead: pd.Series,
+    trait_type: str,
+    n_cases: int | None,
+    n_controls: int | None,
+    prevalence: float | None,
+    sensitivity_prevalences: list[float],
+    n_exp_fallback: int,
+    n_out_fallback: int,
+) -> dict:
+    """Steiger direction of the lead instrument, the SNP the estimate rests on.
+
+    Exposure R^2 is beta^2 x 2p(1 - p) (standardised eQTL effects). For a
+    case-control outcome the outcome R^2 is on the liability scale at the
+    population prevalence K (``r2_outcome_liability``), with N = cases plus
+    controls; without K there is no valid scale and the test is not run.
+    A quantitative outcome uses beta^2 x 2p(1 - p) and the GWAS N. The call
+    is repeated at each sensitivity prevalence: ``steiger_invalid_all_k``
+    when it is invalid at every K, ``steiger_k_sensitive`` when it changes.
+    """
+    out: dict = {
+        "steiger_pval": np.nan, "steiger_valid": None,
+        "r2_exposure": np.nan, "r2_outcome": np.nan,
+        "steiger_invalid_all_k": None, "steiger_k_sensitive": None,
+    }
+    maf = _finite(lead, "maf")
+    out["steiger_maf_fallback_count"] = int(np.isnan(maf))
+    if np.isnan(maf):
+        maf = 0.3
+    geno_var = 2.0 * maf * (1.0 - maf)
+    r2_exp = min(float(lead["beta_exposure"]) ** 2 * geno_var, 0.999)
+    lor = float(lead["beta_outcome"])
+    n_exp = _finite(lead, "n_exposure")
+    n_exp = int(n_exp) if np.isfinite(n_exp) else n_exp_fallback
+
+    if trait_type != "case_control":
+        out["steiger_binary_calibration"] = "not_applicable"
+        r2_out = min(lor**2 * geno_var, 0.999)
+        n_out = _finite(lead, "n_outcome")
+        n_out = int(n_out) if np.isfinite(n_out) else n_out_fallback
+    elif not (n_cases and n_controls):
+        out["steiger_binary_calibration"] = "missing_n"
+        return out
+    elif prevalence is None:
+        out["steiger_binary_calibration"] = "skipped_no_prevalence"
+        return out
+    else:
+        out["steiger_binary_calibration"] = "liability"
+        # Without case and control frequencies the MAF stands in for the
+        # population frequency.
+        f_cases = _finite(lead, "fcas")
+        f_controls = _finite(lead, "fcon")
+        if np.isnan(f_cases) or np.isnan(f_controls):
+            f_cases = f_controls = maf
+        r2_out = r2_outcome_liability(lor, f_cases, f_controls, prevalence)
+        n_out = int(n_cases) + int(n_controls)
+
+    try:
+        pval, valid = steiger_test(r2_exp, r2_out, n_exp, n_out)
+    except (ValueError, ZeroDivisionError):
+        return out
+    out.update(steiger_pval=pval, steiger_valid=valid, r2_exposure=r2_exp, r2_outcome=r2_out)
+    if trait_type == "case_control":
+        calls = [valid] + [
+            r2_exp > r2_outcome_liability(lor, f_cases, f_controls, k)
+            for k in sensitivity_prevalences
+        ]
+        out["steiger_invalid_all_k"] = not any(calls)
+        out["steiger_k_sensitive"] = len(set(calls)) > 1
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2048,6 +2121,19 @@ def _resolve_coloc_variance_inputs(
     return cases / total, total
 
 
+# coloc's prior standard deviation of a causal effect: 0.15 x sdY for a
+# quantitative trait (the eQTL effects here are standardised, sdY = 1) and
+# 0.2 on the log odds scale for a case-control trait.
+_COLOC_PRIOR_SD = {"quant": 0.15, "cc": 0.2}
+
+
+def _logdiff(x: float, y: float) -> float:
+    """log(exp(x) - exp(y)), minus infinity when that is not positive."""
+    m = max(x, y)
+    d = np.exp(x - m) - np.exp(y - m)
+    return float(m + np.log(d)) if d > 0 else -np.inf
+
+
 def coloc_abf(
     beta1: np.ndarray, se1: np.ndarray,
     beta2: np.ndarray, se2: np.ndarray,
@@ -2056,11 +2142,15 @@ def coloc_abf(
     type1: str = "quant", type2: str = "cc",
     s2: float | None = None,
     p1: float = 1e-4, p2: float = 1e-4, p12: float = 1e-5,
-    prior_var1: float = 0.15**2, prior_var2: float = 0.15**2,
+    prior_var1: float | None = None, prior_var2: float | None = None,
 ) -> dict:
-    """Native reimplementation of coloc.abf (Giambartolomei et al. 2014).
+    """coloc.abf (Giambartolomei et al. 2014) as coloc's R package computes it.
 
-    All computation in log space to avoid numerical overflow.
+    Wakefield approximate Bayes factors with the prior SD of each trait's
+    type; H0 enters with log weight 0 and H3 leaves out the configurations
+    in which both causal variants are the same SNP (coloc's combine.abf);
+    a prior probability that n SNPs would push to 1 or more is lowered to
+    1 / (n + 1) (coloc's adjust_prior). All computation in log space.
     """
     n_snps = len(beta1)
     if n_snps == 0:
@@ -2078,8 +2168,8 @@ def coloc_abf(
     else:
         V2 = se2**2
 
-    W1 = prior_var1
-    W2 = prior_var2
+    W1 = prior_var1 if prior_var1 is not None else _COLOC_PRIOR_SD[type1] ** 2
+    W2 = prior_var2 if prior_var2 is not None else _COLOC_PRIOR_SD[type2] ** 2
 
     r1 = W1 / (W1 + V1)
     r2 = W2 / (W2 + V2)
@@ -2091,15 +2181,15 @@ def coloc_abf(
     lsum2 = scipy.special.logsumexp(labf2)
     lsum12 = scipy.special.logsumexp(labf1 + labf2)
 
+    p1, p2, p12 = (p if n_snps * p < 1 else 1.0 / (n_snps + 1) for p in (p1, p2, p12))
     lp1 = np.log(p1)
     lp2 = np.log(p2)
     lp12 = np.log(p12)
-    log1mp = np.log(1 - p1 - p2 - p12) if (p1 + p2 + p12) < 1.0 else -np.inf
 
-    lh0 = log1mp
+    lh0 = 0.0
     lh1 = lp1 + lsum1
     lh2 = lp2 + lsum2
-    lh3 = lp1 + lp2 + lsum1 + lsum2
+    lh3 = lp1 + lp2 + _logdiff(lsum1 + lsum2, lsum12)
     lh4 = lp12 + lsum12
 
     all_lh = np.array([lh0, lh1, lh2, lh3, lh4])
@@ -2126,13 +2216,18 @@ def coloc_abf(
 
 
 def annotate_cross_source(mr_results: pd.DataFrame) -> pd.DataFrame:
-    """For each gene, compare MR results across sources."""
+    """For each gene, compare MR results across sources.
+
+    ``tissue_discordant`` marks both rows of a gene whose other source is
+    nominally significant (P < 0.05) with the opposite sign.
+    """
     if mr_results.empty:
         return mr_results
 
     sources = mr_results["eqtl_source"].unique()
     if len(sources) <= 1:
         mr_results["cross_source_status"] = "unavailable"
+        mr_results["tissue_discordant"] = False
         return mr_results
 
     mr_results = mr_results.copy()
@@ -2170,6 +2265,7 @@ def annotate_cross_source(mr_results: pd.DataFrame) -> pd.DataFrame:
         else:
             mr_results.loc[gene_mask, "cross_source_status"] = "non_significant"
 
+    mr_results["tissue_discordant"] = mr_results["cross_source_status"] == "discordant"
     return mr_results
 
 
@@ -2182,10 +2278,16 @@ def assign_confidence_tiers(
     mr_results: pd.DataFrame,
     require_coloc: bool = True,
     require_steiger: bool = False,
+    disease_relevant_source: str | None = None,
 ) -> pd.DataFrame:
     """Assign confidence_tier to each gene based on MR results.
 
-    Must be called AFTER cross_source_status is populated.
+    Must be called AFTER cross_source_status is populated. A significant,
+    colocalised row is ``high`` when the other source agrees and ``medium``
+    otherwise. When the sources disagree in sign, the row of
+    ``disease_relevant_source`` keeps ``medium`` and every other row is
+    ``direction_conflict``, which drug matching skips; with no relevant
+    source named, every row of such a gene is ``direction_conflict``.
     """
     if mr_results.empty:
         return mr_results
@@ -2213,7 +2315,7 @@ def assign_confidence_tiers(
         css = row.get("cross_source_status", "unavailable")
         if css == "concordant":
             mr_results.at[idx, "confidence_tier"] = "high"
-        elif css == "discordant":
+        elif css == "discordant" and row.get("eqtl_source") != disease_relevant_source:
             mr_results.at[idx, "confidence_tier"] = "direction_conflict"
         else:
             mr_results.at[idx, "confidence_tier"] = "medium"
@@ -2549,47 +2651,43 @@ def _bh_fdr_finite(pvals: pd.Series) -> pd.Series:
     return out
 
 
+def _apply_tested_bonferroni(rows: list[dict], alpha: float = 0.05) -> tuple[int, float]:
+    """Bonferroni over the genes of one source that produced a P value.
+
+    PGC3's SMR corrected for "the number of genes with significant eQTLs
+    tested"; a gene without an instrument or a result is not a test. Sets
+    each row's threshold and call and returns (tests, threshold).
+    """
+    n_tested = sum(1 for r in rows if np.isfinite(r.get("mr_pval", np.nan)))
+    threshold = alpha / n_tested if n_tested else alpha
+    for r in rows:
+        r["bonferroni_threshold"] = threshold
+        r["mr_significant"] = bool(r.get("mr_pval", np.nan) < threshold)
+    return n_tested, threshold
+
+
 def _annotate_fdr_track(
     mr_results: pd.DataFrame,
     *,
     fdr_alpha: float = 0.05,
 ) -> pd.DataFrame:
-    """Additive per-source BH-FDR + tested-Bonferroni sensitivity.
+    """Per-source BH-FDR over finite MR P values, reported beside the
+    Bonferroni call (``mr_fdr_bh_q``, ``mr_significant_fdr_bh``).
 
-    The primary confirmatory call (``mr_significant`` at the source-eligible
-    Bonferroni threshold) is never touched. This adds, per ``eqtl_source``
-    and over *finite* MR p-values only:
-
-      - ``mr_fdr_bh_q`` / ``mr_significant_fdr_bh`` - discovery-regime view;
-      - ``bonferroni_threshold_tested`` / ``mr_significant_bonferroni_tested`` -
-        Bonferroni recomputed over genes that actually emitted a p-value
-        (a secondary, less-conservative denominator than the source-eligible one).
-
-    Rows with a non-finite ``mr_pval`` get NaN q / False significance.
+    The primary call ``mr_significant`` is never touched. Rows with a
+    non-finite ``mr_pval`` get NaN q and False.
     """
     if mr_results.empty or "mr_pval" not in mr_results.columns:
         mr_results["mr_fdr_bh_q"] = np.nan
         mr_results["mr_significant_fdr_bh"] = False
-        mr_results["bonferroni_threshold_tested"] = np.nan
-        mr_results["mr_significant_bonferroni_tested"] = False
         return mr_results
 
     q = pd.Series(np.nan, index=mr_results.index, dtype=float)
-    bonf_tested = pd.Series(np.nan, index=mr_results.index, dtype=float)
-    pval_num = pd.to_numeric(mr_results["mr_pval"], errors="coerce")
-
     for _source, grp in mr_results.groupby("eqtl_source", sort=False):
         q.loc[grp.index] = _bh_fdr_finite(grp["mr_pval"])
-        n_tested = int(np.isfinite(pd.to_numeric(grp["mr_pval"], errors="coerce")).sum())
-        if n_tested > 0:
-            bonf_tested.loc[grp.index] = fdr_alpha / n_tested
 
     mr_results["mr_fdr_bh_q"] = q
     mr_results["mr_significant_fdr_bh"] = (q < fdr_alpha).fillna(False)
-    mr_results["bonferroni_threshold_tested"] = bonf_tested
-    mr_results["mr_significant_bonferroni_tested"] = (
-        pval_num < bonf_tested
-    ).fillna(False)
     return mr_results
 
 
@@ -2954,48 +3052,17 @@ def _run_mr_for_gene(
     result["n_exposure_median"] = n_exp
     result["n_outcome_median"] = n_out
 
-    maf_steiger = harmonised["maf"].values if "maf" in harmonised.columns else np.full(k, np.nan)
-    steiger_maf_fallback_count = int((~np.isfinite(maf_steiger)).sum())
-    maf_steiger = np.where(np.isfinite(maf_steiger), maf_steiger, 0.3)
-    geno_var = 2.0 * maf_steiger * (1.0 - maf_steiger)
-    r2_exp = float(np.sum(bx**2 * geno_var))
-    r2_out = float(np.sum(by**2 * geno_var))
-
-    r2_exp = min(r2_exp, 0.999)
-    r2_out = min(r2_out, 0.999)
-
     trait_type = getattr(gwas_metadata, "trait_type", "quantitative")
     n_cases = None
     n_controls = None
-    pop_prevalence = getattr(gwas_metadata, "population_prevalence", None)
     if trait_type == "case_control":
         n_cases = getattr(gwas_metadata, "n_cases", None)
         n_controls = getattr(gwas_metadata, "n_controls", None)
-
-    # Record whether the liability-scale calibration fired.
-    if trait_type != "case_control":
-        result["steiger_binary_calibration"] = "not_applicable"
-    elif pop_prevalence is not None and n_cases and n_controls:
-        result["steiger_binary_calibration"] = "applied"
-    elif n_cases and n_controls:
-        result["steiger_binary_calibration"] = "skipped_no_prevalence"
-    else:
-        result["steiger_binary_calibration"] = "missing_n"
-
-    try:
-        s_pval, s_valid = steiger_test(
-            r2_exp, r2_out, n_exp, n_out,
-            trait_type=trait_type if trait_type in ("quantitative", "case_control") else "quantitative",
-            n_cases=n_cases, n_controls=n_controls,
-            population_prevalence=pop_prevalence,
-        )
-        result["steiger_pval"] = s_pval
-        result["steiger_valid"] = s_valid
-        result["r2_exposure"] = r2_exp
-        result["r2_outcome"] = r2_out
-        result["steiger_maf_fallback_count"] = steiger_maf_fallback_count
-    except (ValueError, ZeroDivisionError):
-        pass
+    result.update(_steiger_for_lead(
+        harmonised.iloc[0], trait_type, n_cases, n_controls,
+        getattr(gwas_metadata, "population_prevalence", None),
+        list(config.steiger_prevalence_sensitivity), n_exp, n_out,
+    ))
 
     # Colocalisation (skipped when chunked orchestrator handles it in Phase 3)
     result["coloc_supported"] = False
@@ -3340,8 +3407,6 @@ def run_mendelian_randomisation(
                 source_config.path, config.instrument_pval, stats_out=load_stats,
             )
 
-        bonf_threshold = 0.05 / n_genes_valid if n_genes_valid > 0 else 0.05
-
         # Annotate gene_info_map with gene_id_converter
         gene_info_map: dict[str, dict] = {}
         for g, meta in gene_metadata.items():
@@ -3364,6 +3429,11 @@ def run_mendelian_randomisation(
 
         # --- Phase 2: MR estimation ---
         n_gene_tasks = len(instruments_df["gene"].unique()) if not instruments_df.empty else 0
+        # Provisional: significance is set once every gene has run, over the
+        # genes that produced a P value (_apply_tested_bonferroni). Genes
+        # with candidates bound that number, so this threshold is never
+        # looser than the final one.
+        bonf_threshold = 0.05 / max(n_gene_tasks, 1)
         effective_workers = min(
             n_workers_cap if n_workers_cap is not None else config.n_workers,
             config.n_workers,
@@ -3372,8 +3442,8 @@ def run_mendelian_randomisation(
         )
 
         logger.info(
-            "--- Phase 2: MR estimation for %s (%d genes, Bonf=%.2e, workers=%d) ---",
-            source_name, n_genes_valid, bonf_threshold, effective_workers,
+            "--- Phase 2: MR estimation for %s (%d genes in the file, %d with candidates, workers=%d) ---",
+            source_name, n_genes_valid, n_gene_tasks, effective_workers,
         )
         logger.info(
             "Phase 2 worker selection: config_n_workers=%d, threads_cap=%s, "
@@ -3527,15 +3597,19 @@ def run_mendelian_randomisation(
                         if result.get("mr_significant", False):
                             n_significant += 1
 
-        genes_with_instruments = set(instruments_df["gene"].unique()) if not instruments_df.empty else set()
-
         phase2_duration = time.time() - phase2_t0 if n_gene_tasks > 0 else 0.0
         phase2_genes_per_min = (n_gene_tasks / max(phase2_duration, 0.1)) * 60
 
+        n_tested, bonf_threshold = _apply_tested_bonferroni(
+            [r for r in all_results if r.get("eqtl_source") == source_name]
+        )
+        n_significant = sum(
+            bool(r["mr_significant"]) for r in all_results if r.get("eqtl_source") == source_name
+        )
         logger.info(
-            "Phase 2 complete for %s: %d genes in Bonf denom, %d with instruments, "
+            "Phase 2 complete for %s: %d genes with a P value, Bonferroni %.2e, "
             "%d MR-significant (%.1fs, %.1f genes/min)",
-            source_name, n_genes_valid, len(genes_with_instruments), n_significant,
+            source_name, n_tested, bonf_threshold, n_significant,
             phase2_duration, phase2_genes_per_min,
         )
 
@@ -3627,7 +3701,8 @@ def run_mendelian_randomisation(
 
         source_metadata.append({
             "source": source_name,
-            "n_genes_bonferroni_denominator": n_genes_valid,
+            "n_genes_in_source": n_genes_valid,
+            "n_genes_bonferroni_denominator": n_tested,
             "bonferroni_threshold": bonf_threshold,
             "n_instruments_retained": len(instruments_df),
             "n_significant": n_significant,
@@ -3676,8 +3751,7 @@ def run_mendelian_randomisation(
         else:
             mr_results[col] = mr_results[col].fillna(default)
 
-    # Additive per-source BH-FDR + tested-Bonferroni sensitivity.
-    # Primary mr_significant / bonferroni_threshold are untouched.
+    # Per-source BH-FDR beside the Bonferroni call, which it leaves alone.
     mr_results = _annotate_fdr_track(mr_results)
 
     mr_results = annotate_cross_source(mr_results)
@@ -3685,6 +3759,7 @@ def run_mendelian_randomisation(
         mr_results,
         require_coloc=config.require_coloc,
         require_steiger=config.require_steiger,
+        disease_relevant_source=config.disease_relevant_source,
     )
 
     dm_config = config.drug_match
@@ -3791,19 +3866,12 @@ def run_mendelian_randomisation(
     )
     multiple_testing = {
         "primary_method": "per_source_bonferroni",
-        "denominator_policy": (
-            "source_eligible_genes (all genes with >=1 instrument per source; "
-            "). mr_significant still uses 0.05/n_genes_valid."
-        ),
+        "denominator_policy": "genes with a finite MR P value, per eQTL source",
         "fdr_method": "fdr_bh",
         "fdr_scope": "per_eqtl_source_over_finite_pvalues",
         "fdr_alpha": 0.05,
         "n_significant_bonferroni_primary": n_sig,
         "n_significant_fdr_bh": n_sig_fdr,
-        "n_significant_bonferroni_tested": (
-            int(mr_results["mr_significant_bonferroni_tested"].sum())
-            if "mr_significant_bonferroni_tested" in mr_results.columns else 0
-        ),
         "per_source": [
             {
                 "source": str(src),
@@ -3876,6 +3944,16 @@ def run_mendelian_randomisation(
         ),
         "require_coloc": config.require_coloc,
         "require_steiger": config.require_steiger,
+        "steiger_prevalence_sensitivity": list(config.steiger_prevalence_sensitivity),
+        "n_steiger_invalid_all_k": (
+            int((mr_results["steiger_invalid_all_k"] == True).sum())  # noqa: E712
+            if "steiger_invalid_all_k" in mr_results.columns else 0
+        ),
+        "disease_relevant_source": config.disease_relevant_source,
+        "n_tissue_discordant_genes": (
+            int(mr_results.loc[mr_results["tissue_discordant"] == True, "gene_ensembl_id"].nunique())  # noqa: E712
+            if "tissue_discordant" in mr_results.columns else 0
+        ),
         # MHC annotation + sensitivity provenance.
         "mhc_sensitivity": mhc_metadata,
         "maf_resolution": maf_counters,

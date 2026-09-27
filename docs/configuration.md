@@ -53,10 +53,12 @@ supplied:
 
 - `sample_size` is needed by MAGMA when the GWAS has no per-variant N column.
 - `n_cases` / `n_controls` let colocalisation model a case-control trait
-  correctly instead of assuming a quantitative one.
-- `population_prevalence` is the **true lifetime population** prevalence, not
-  the case fraction in your sample. It is used for Steiger filtering in
-  Branch C. Leave it unset rather than guessing.
+  correctly instead of assuming a quantitative one, and give Branch C's
+  Steiger test its outcome sample size.
+- `population_prevalence` is the **true population** prevalence (lifetime
+  morbid risk), not the case fraction in your sample. It puts Branch C's
+  Steiger test for a case-control outcome on the liability scale; without it
+  that test is not run. Leave it unset rather than guessing.
 - `genome_build` is auto-detected when omitted, but stating it avoids an
   expensive misdetection.
 - `trait_type` is `binary` or `continuous`. It decides how colocalisation
@@ -290,6 +292,8 @@ per-tissue nulls are behaving.
 | `min_coloc_snps` | `50` | Minimum overlap to attempt coloc |
 | `require_coloc` | `true` | Causal calls must also colocalise |
 | `require_steiger` | `false` | Enforce direction-of-effect filter |
+| `steiger_prevalence_sensitivity` | `[]` | Further prevalences at which the Steiger direction is judged |
+| `disease_relevant_source` | `null` | eQTL source that decides a gene whose sources disagree in sign |
 | `coloc_prior_p1` | `1e-4` | Prior that a variant affects expression |
 | `coloc_prior_p2` | `1e-4` | Prior that a variant affects the trait |
 | `coloc_prior_p12` | `1e-5` | Prior that a variant affects both |
@@ -327,6 +331,30 @@ when its P is below 0.05), and from three instruments MR-Egger and the
 weighted median, computed as TwoSampleMR computes them. These are
 descriptive.
 
+A gene is significant when its P value is below 0.05 divided by the number of
+genes of the same eQTL source that produced one, as PGC3's SMR corrected; a
+Benjamini-Hochberg q value is reported beside it. Colocalisation runs on
+every significant gene and is coloc.abf as the coloc package computes it:
+prior SD 0.15 for the standardised expression effects and 0.2 for a
+case-control outcome, and the package's prior cap for regions of 10,000 SNPs
+or more.
+
+Steiger's direction test uses the lead instrument, the SNP the estimate
+rests on. For a case-control outcome the variance it explains is taken on the
+liability scale at `study.population_prevalence`, from its log odds ratio and
+case and control allele frequencies (TwoSampleMR's `get_r_from_lor`), with
+cases plus controls as the sample size; without a prevalence the test is not
+run. The call is repeated at each `steiger_prevalence_sensitivity` value:
+`steiger_invalid_all_k` marks a gene invalid at every prevalence and
+`steiger_k_sensitive` one whose call changes.
+
+When a gene's other eQTL source is nominally significant (P < 0.05) with the
+opposite sign, both rows carry `tissue_discordant`. The source named in
+`disease_relevant_source` then decides the gene: its row keeps its tier (at
+most `medium`, since `high` needs both sources to agree) and the other row is
+`direction_conflict`, which drug matching skips. With no source named, every
+row of such a gene is `direction_conflict`.
+
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish
 a genuinely shared causal variant from two distinct variants in LD, which is
@@ -344,11 +372,6 @@ it to `mr/sensitivity/mhc_excluded/`. It is worth leaving on: in the run above
 it showed 329 significant genes overall versus 256 outside the MHC, while the
 high-confidence count was 39 either way, which is exactly the reassurance you
 want that the headline result is not an artefact of MHC long-range LD.
-
-Steiger filtering is skipped for any gene when `study.population_prevalence`
-is unset, and the metadata sidecar records how many were skipped for that
-reason. In the run above that was 23,761. If you intend to rely on Steiger,
-set the prevalence.
 
 ## `open_targets`
 

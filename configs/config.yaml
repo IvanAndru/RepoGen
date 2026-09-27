@@ -15,10 +15,11 @@ study:
   # n_controls: 46839
   genome_build: "GRCh37"                  # GRCh37 or GRCh38; manual preferred; auto-detected if omitted
   trait_type: "case_control"              # case_control or quantitative; auto-detected
-  # population_prevalence: 0.01           # TRUE population (lifetime) disease prevalence
-                                          #   (e.g. 0.01 for schizophrenia). ONLY used for the Branch C
-                                          #   Steiger liability-scale transform. NEVER the sample case
-                                          #   fraction. Leave unset to keep Steiger observed-scale.
+  population_prevalence: 0.0072           # TRUE population disease prevalence K: schizophrenia's
+                                          #   lifetime morbid risk (Saha et al. 2005). ONLY used for the
+                                          #   Branch C Steiger test on the liability scale; NEVER the
+                                          #   sample case fraction. Unset: Steiger is not run for a
+                                          #   case-control outcome.
 
 # ---------------------------------------------------------------------------
 # GWAS preprocessing / QC
@@ -216,6 +217,9 @@ mr:
   # Drug matching gating
   require_coloc: true              # only coloc-supported genes get drug matches
   require_steiger: false           # Steiger annotates by default; set true to gate
+  steiger_prevalence_sensitivity: [0.004, 0.01]   # further K: median lifetime prevalence and 1%
+  disease_relevant_source: "metabrain_cortex"     # decides a gene whose tissues disagree in sign;
+                                                  #   unset leaves such genes undecided
 
   # Drug-match filters + gene<->drug ID join.
   drug_match:
