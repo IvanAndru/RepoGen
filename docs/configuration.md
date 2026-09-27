@@ -355,6 +355,26 @@ most `medium`, since `high` needs both sources to agree) and the other row is
 `direction_conflict`, which drug matching skips. With no source named, every
 row of such a gene is `direction_conflict`.
 
+Drug matching runs for significant, colocalised genes. With
+`drug_match.match_mode: strict` a gene is joined to the drug table by
+Ensembl ID, then Entrez, UniProt and an unambiguous symbol; an Entrez or
+UniProt join never brings in rows annotated to a different Ensembl gene. Each
+match gets a `match_status`. It is a `candidate` when the drug acts against
+the genetic risk (lowering a risk-raising gene, raising a protective one) on
+interaction evidence the drug loader rates medium or high: a curated
+mechanism or measured affinity in ChEMBL, or a DGIdb claim that cites a
+publication. Otherwise it is `mhc_region` (the gene lies in the MHC; reported
+apart, never a candidate), `low_evidence` (an uncited claim), `binder` (no
+direction), `predicted_adverse` (the drug would act with the risk) or
+`steiger_invalid` (the gene's Steiger direction is invalid at every
+prevalence tried). A gene's verdict in `mr_target_verdicts` follows its best
+match: `candidate`, `steiger_invalid`, `predicted_adverse_only`,
+`binder_only`, `low_evidence_only`, `mhc_region`, or `no_filtered_match` and
+`no_drug_record` when nothing passes. Every colocalised gene lists in
+`locus_colocalised_genes` the other colocalised genes whose lead SNP is the
+same as its own or in LD with it (r^2 > 0.1 in the clumping panel); which of
+them is causal is not decided.
+
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish
 a genuinely shared causal variant from two distinct variants in LD, which is

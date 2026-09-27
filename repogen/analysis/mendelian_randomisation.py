@@ -45,12 +45,20 @@ logger = setup_logging(__name__)
 # Direction lookup constants
 # ---------------------------------------------------------------------------
 
-DOWNREGULATING_TYPES = frozenset({"inhibitor", "antagonist", "blocker", "negative_modulator"})
-UPREGULATING_TYPES = frozenset({"agonist", "activator", "positive_modulator"})
-AMBIGUOUS_TYPES = frozenset({"partial_agonist", "modulator", "other"})
+DOWNREGULATING_TYPES = frozenset(
+    {"inhibitor", "antagonist", "blocker", "negative_modulator", "expression_down"}
+)
+UPREGULATING_TYPES = frozenset({"agonist", "activator", "positive_modulator", "expression_up"})
+AMBIGUOUS_TYPES = frozenset({"partial_agonist", "modulator", "other", "expression_perturbation"})
 # Direction-inferable = the MR sign can be interpreted against the interaction sign.
-# This is distinct from "has a curated mechanism_of_action text".
+# This is distinct from "has a curated mechanism_of_action text". Any other
+# interaction type, known or not, leaves the direction unknown.
 INFERABLE_TYPES = DOWNREGULATING_TYPES | UPREGULATING_TYPES
+
+# Interaction evidence a drug candidate needs: the drug loader rates a ChEMBL
+# row medium or high (a curated mechanism, a measured affinity, or both) and
+# a DGIdb row medium only when the claim cites a publication.
+CANDIDATE_EVIDENCE = frozenset({"medium", "high"})
 
 COMPLEMENT = {"A": "T", "T": "A", "C": "G", "G": "C"}
 
@@ -2323,6 +2331,97 @@ def assign_confidence_tiers(
     return mr_results
 
 
+def _lead_ld_pairs(
+    leads: pd.DataFrame, bfile_full_path: Path, plink_binary: Path, r2_min: float = 0.1,
+) -> set[frozenset]:
+    """Pairs of lead SNPs in LD above ``r2_min`` in the clumping panel.
+
+    ``leads`` has columns SNP and chr. PLINK computes r^2 within each
+    chromosome's panel for leads up to 10 Mb apart; a chromosome whose leads
+    the panel lacks contributes no pairs.
+    """
+    pairs: set[frozenset] = set()
+    for chrom, grp in leads.groupby("chr"):
+        snps = sorted(set(grp["SNP"]))
+        if len(snps) < 2:
+            continue
+        bfile = _chromosome_bfile(bfile_full_path, int(chrom)) or bfile_full_path
+        with tempfile.TemporaryDirectory(prefix="repogen_ld_") as tmp:
+            extract = Path(tmp) / "leads.txt"
+            extract.write_text("\n".join(snps) + "\n")
+            out = Path(tmp) / "ld"
+            cmd = [
+                str(plink_binary), "--bfile", str(bfile), "--extract", str(extract),
+                "--r2", "--ld-window", "99999", "--ld-window-kb", "10000",
+                "--ld-window-r2", str(r2_min), "--out", str(out),
+            ]
+            if int(chrom) >= 1:
+                cmd.extend(["--chr", str(int(chrom))])
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as e:
+                text = ((e.stdout or "") + (e.stderr or "")).lower()
+                if "no variants remaining" in text or "0 variants remaining" in text:
+                    continue
+                raise RuntimeError(
+                    f"PLINK LD between lead instruments failed (returncode={e.returncode}): "
+                    f"{(e.stderr or '')[:500]}"
+                ) from e
+            ld_path = Path(f"{out}.ld")
+            if not ld_path.exists():
+                continue
+            ld = pd.read_csv(ld_path, sep=r"\s+")
+            for a, b, r2 in zip(ld["SNP_A"], ld["SNP_B"], ld["R2"]):
+                if r2 > r2_min:
+                    pairs.add(frozenset((a, b)))
+    return pairs
+
+
+def annotate_loci(
+    mr_results: pd.DataFrame, bfile_full_path: Path, plink_binary: Path,
+) -> pd.DataFrame:
+    """List, for each colocalised gene, the other colocalised genes at its locus.
+
+    Genes whose lead instruments are the same SNP or in LD (r^2 > 0.1 in the
+    clumping panel) share a locus, where colocalisation cannot tell which of
+    them carries the signal; which one is causal is not decided here. The
+    names go in ``locus_colocalised_genes`` (semicolon-separated, empty when
+    the gene is alone); rows that do not colocalise get none.
+    """
+    mr_results = mr_results.copy()
+    mr_results["locus_colocalised_genes"] = None
+    if "lead_instrument_snp" not in mr_results.columns:
+        return mr_results
+    col = mr_results.loc[
+        (mr_results["coloc_status"] == "colocalised") & mr_results["lead_instrument_snp"].notna()
+    ]
+    if col.empty:
+        return mr_results
+
+    snp = col["lead_instrument_snp"].astype(str)
+    leads = pd.DataFrame({"SNP": snp, "chr": pd.to_numeric(col["gene_chr"], errors="coerce")})
+    leads = leads.dropna().drop_duplicates()
+    parent = {x: x for x in snp}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for pair in _lead_ld_pairs(leads, bfile_full_path, plink_binary):
+        a, b = tuple(pair)
+        if a in parent and b in parent:
+            parent[find(a)] = find(b)
+
+    symbol = col["gene_symbol"].where(col["gene_symbol"].fillna("").astype(str) != "", col["gene_ensembl_id"])
+    locus = snp.map(find)
+    for idx in col.index:
+        same = (locus == locus[idx]) & (col["gene_ensembl_id"] != col.at[idx, "gene_ensembl_id"])
+        mr_results.at[idx, "locus_colocalised_genes"] = ";".join(sorted(set(symbol[same].astype(str))))
+    return mr_results
+
+
 # ---------------------------------------------------------------------------
 # Directional drug matching
 # ---------------------------------------------------------------------------
@@ -2390,16 +2489,24 @@ def _resolve_drug_matches_by_id(
         if not matches.empty:
             return matches, "ensembl"
 
+    def _same_gene(rows: pd.DataFrame) -> pd.DataFrame:
+        # An Entrez or UniProt ID can be shared with another gene (RPS17L has
+        # RPS17's Entrez ID); rows annotated to a different Ensembl gene are
+        # that gene, and rows with no Ensembl ID cannot say otherwise.
+        row_ens = ens_norm.loc[rows.index]
+        return rows.loc[~row_ens.str.startswith("ENS") | (row_ens == ens_key)]
+
     entrez = gene_result.get("gene_entrez_id")
     if entrez is not None and not (isinstance(entrez, float) and np.isnan(entrez)) and "gene_entrez_id" in drug_targets.columns:
         dt_entrez = pd.to_numeric(drug_targets["gene_entrez_id"], errors="coerce")
-        matches = drug_targets.loc[dt_entrez == pd.to_numeric(entrez, errors="coerce")]
+        matches = _same_gene(drug_targets.loc[dt_entrez == pd.to_numeric(entrez, errors="coerce")])
         if not matches.empty:
             return matches, "entrez"
 
     uniprot = gene_result.get("gene_uniprot_id")
     if uniprot and "gene_uniprot_id" in drug_targets.columns:
-        matches = drug_targets.loc[drug_targets["gene_uniprot_id"].astype(str) == str(uniprot)]
+        uniprot_rows = drug_targets.loc[drug_targets["gene_uniprot_id"].astype(str) == str(uniprot)]
+        matches = _same_gene(uniprot_rows)
         if not matches.empty:
             return matches, "uniprot"
 
@@ -2413,6 +2520,45 @@ def _resolve_drug_matches_by_id(
                 return sym_matches, "symbol"
 
     return drug_targets.iloc[0:0], ""
+
+
+def _is_true(value: object) -> bool:
+    return isinstance(value, (bool, np.bool_)) and bool(value)
+
+
+def _match_status(gene_result: pd.Series, concordant: bool | None, confidence: object) -> str:
+    """Where one gene-drug match stands.
+
+    ``candidate``: the drug acts in the direction that opposes the genetic
+    risk, on interaction evidence the loader rates medium or high. Otherwise,
+    in this order: ``mhc_region`` (the gene lies in the MHC; reported, never
+    a candidate), ``low_evidence`` (an uncited interaction claim), ``binder``
+    (no direction), ``predicted_adverse`` (the drug would act with the risk,
+    as ACE inhibitors would for ACE), ``steiger_invalid`` (a candidate but
+    for a Steiger direction invalid at every prevalence tried).
+    """
+    if _is_true(gene_result.get("mhc_flag")):
+        return "mhc_region"
+    if confidence not in CANDIDATE_EVIDENCE:
+        return "low_evidence"
+    if concordant is None:
+        return "binder"
+    if not concordant:
+        return "predicted_adverse"
+    if _is_true(gene_result.get("steiger_invalid_all_k")):
+        return "steiger_invalid"
+    return "candidate"
+
+
+# A gene's verdict is set by the first of its matches' statuses in this order.
+_VERDICT_BY_STATUS = (
+    ("candidate", "candidate"),
+    ("steiger_invalid", "steiger_invalid"),
+    ("predicted_adverse", "predicted_adverse_only"),
+    ("binder", "binder_only"),
+    ("low_evidence", "low_evidence_only"),
+    ("mhc_region", "mhc_region"),
+)
 
 
 def _drug_match_rank_keys(config: MRDrugMatchConfig) -> tuple[list[str], list[bool]]:
@@ -2483,17 +2629,18 @@ def _build_drug_match_records(
     records = []
     for row in m.itertuples(index=False):
         itype = getattr(row, "interaction_type", "other")
-        ambiguous = itype in AMBIGUOUS_TYPES
         inferable = itype in INFERABLE_TYPES
+        ambiguous = not inferable
 
-        if ambiguous:
+        # A risk-raising gene (positive estimate) wants a drug that lowers its
+        # activity or expression; a protective one, a drug that raises it.
+        if not inferable or mr_beta == 0:
             concordant = None
-        elif mr_beta > 0:
-            concordant = itype in DOWNREGULATING_TYPES
-        elif mr_beta < 0:
-            concordant = itype in UPREGULATING_TYPES
+        elif itype in DOWNREGULATING_TYPES:
+            concordant = bool(mr_beta > 0)
         else:
-            concordant = None
+            concordant = bool(mr_beta < 0)
+        confidence = getattr(row, "confidence", None)
 
         moa = getattr(row, "mechanism_of_action", None)
         # Null-safe: the drug loader emits pd.NA for affinity-only records, and
@@ -2525,8 +2672,10 @@ def _build_drug_match_records(
             "has_mechanism_text": has_moa,
             "direction_inferable": inferable,
             "drug_target_source": getattr(row, "source", None),
-            "drug_target_confidence": getattr(row, "confidence", None),
+            "drug_target_confidence": confidence,
             "match_via": match_via or None,
+            "match_status": _match_status(gene_result, concordant, confidence),
+            "locus_colocalised_genes": gene_result.get("locus_colocalised_genes"),
             "drug_match_rank": None,
         })
 
@@ -2585,14 +2734,14 @@ def _summarise_gene_verdict(
     else:
         n_concordant = 0
 
+    has_status = n_filtered and "match_status" in matches.columns
+    statuses = set(matches["match_status"]) if has_status else set()
     if raw_count == 0:
         status = "no_drug_record"
     elif n_filtered == 0:
         status = "no_filtered_match"
-    elif n_inferable > 0:
-        status = "actionable"
     else:
-        status = "binder_only"
+        status = next((v for s, v in _VERDICT_BY_STATUS if s in statuses), "binder_only")
 
     best = None
     if n_filtered:
@@ -2624,12 +2773,14 @@ def _summarise_gene_verdict(
         "n_filtered_matches": int(n_filtered),
         "n_direction_inferable": n_inferable,
         "n_direction_concordant": n_concordant,
+        "n_candidates": int((matches["match_status"] == "candidate").sum()) if has_status else 0,
         "best_max_phase": _best("max_phase"),
         "best_pchembl": _best("pchembl_value"),
         "best_match_via": _best("match_via"),
         "best_drug_chembl_id": _best("drug_chembl_id"),
         "best_drug_name": _best("drug_name"),
         "druggable_tier": gene_result.get("druggable_tier"),
+        "locus_colocalised_genes": gene_result.get("locus_colocalised_genes"),
     }
 
 
@@ -3773,6 +3924,9 @@ def run_mendelian_randomisation(
         mr_results, config, reference_config, gene_id_converter,
     )
 
+    # Colocalised genes that share a lead SNP or its LD, listed with each.
+    mr_results = annotate_loci(mr_results, bfile_full_path, plink_binary)
+
     # --- Phase 4: Drug matching (deferred load) ---
     logger.info("Loading drug targets from %s", drug_targets_path)
     drug_targets = pd.read_parquet(drug_targets_path)
@@ -3950,6 +4104,10 @@ def run_mendelian_randomisation(
             if "steiger_invalid_all_k" in mr_results.columns else 0
         ),
         "disease_relevant_source": config.disease_relevant_source,
+        "match_status_counts": (
+            {str(k): int(v) for k, v in mr_drug_matches["match_status"].value_counts().items()}
+            if "match_status" in mr_drug_matches.columns else {}
+        ),
         "n_tissue_discordant_genes": (
             int(mr_results.loc[mr_results["tissue_discordant"] == True, "gene_ensembl_id"].nunique())  # noqa: E712
             if "tissue_discordant" in mr_results.columns else 0

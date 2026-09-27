@@ -45,6 +45,16 @@ All notable changes to RepoGen are recorded here. The format follows
 - A gene whose eQTL sources disagree in sign is decided by the source named
   in `mr.disease_relevant_source` (brain cortex in the example config); with
   none named it stays excluded from drug matching, as before.
+- Branch C's drug matches carry a `match_status`, and only a drug that acts
+  against the genetic risk, on interaction evidence the drug loader rates
+  medium or high, for a gene outside the MHC whose Steiger direction holds
+  at some prevalence, is a `candidate`. Gene verdicts become `candidate`,
+  `predicted_adverse_only`, `binder_only`, `low_evidence_only`,
+  `mhc_region` or `steiger_invalid` in place of `actionable`, which counted
+  any drug with a direction, including drugs predicted to raise risk. The
+  interaction types `expression_down` and `expression_up` now carry a
+  direction and any other type counts as unknown rather than discordant.
+  Results change.
 
 ### Added
 
@@ -62,6 +72,9 @@ All notable changes to RepoGen are recorded here. The format follows
 - Config keys `mr.steiger_prevalence_sensitivity` and
   `mr.disease_relevant_source`, and Branch C result columns
   `steiger_invalid_all_k`, `steiger_k_sensitive` and `tissue_discordant`.
+- `locus_colocalised_genes` on Branch C results, drug matches and verdicts:
+  the other colocalised genes whose lead SNP is the same or in LD with the
+  gene's own. Drug matches gain `match_status`, verdicts `n_candidates`.
 
 ### Removed
 
@@ -75,6 +88,9 @@ All notable changes to RepoGen are recorded here. The format follows
 - Branch C read whichever `*.txt*` or `*.tsv*` file the eQTLGen directory
   listed first. It now ignores README and checksum files and stops with an
   error if more than one table remains.
+- Branch C's strict drug join could attach another gene's drugs through a
+  shared Entrez or UniProt ID (RPS17L took RPS17's); a join by either now
+  keeps only rows without an Ensembl ID or with the gene's own.
 - A Branch C run with no drug matches left an earlier run's
   `mr_drug_matches.csv` in place beside an empty parquet; the CSV is now
   always rewritten.

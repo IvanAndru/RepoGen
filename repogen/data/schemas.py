@@ -673,6 +673,9 @@ MR_RESULT_OPTIONAL: dict[str, type] = {
     "steiger_k_sensitive": bool,
     # The other eQTL source is nominally significant with the opposite sign.
     "tissue_discordant": bool,
+    # For colocalised genes: the other colocalised genes whose lead SNP is
+    # the same or in LD (r^2 > 0.1), semicolon-separated.
+    "locus_colocalised_genes": str,
     # Gene anchor (eQTL-loader coordinate; may be min-SNP-pos) and
     # additive MHC-region flag (Ensembl-membership derived; coordinate fallback
     # opt-in). mhc_flag_method records how the flag was computed.
@@ -732,6 +735,12 @@ class MRDrugMatchRow(BaseModel):
     drug_target_source: Optional[str] = None
     drug_target_confidence: Optional[str] = None
     match_via: Optional[str] = None
+    # candidate | predicted_adverse | binder | low_evidence | mhc_region |
+    # steiger_invalid: only candidates oppose the genetic risk on cited or
+    # curated evidence, outside the MHC.
+    match_status: Optional[str] = None
+    # Other colocalised genes whose lead SNP is this gene's or in LD with it.
+    locus_colocalised_genes: Optional[str] = None
     drug_match_rank: Optional[int] = None
 
 
@@ -764,6 +773,8 @@ MR_DRUG_MATCH_OPTIONAL: dict[str, type] = {
     "drug_target_source": str,
     "drug_target_confidence": str,
     "match_via": str,
+    "match_status": str,
+    "locus_colocalised_genes": str,
     "drug_match_rank": int,
 }
 
@@ -790,17 +801,21 @@ class MRTargetVerdictRow(BaseModel):
     mr_pval: float
     pp_h4: Optional[float] = None
     confidence_tier: str
-    verdict_status: str  # actionable | binder_only | no_filtered_match | no_drug_record
+    # candidate | steiger_invalid | predicted_adverse_only | binder_only |
+    # low_evidence_only | mhc_region | no_filtered_match | no_drug_record
+    verdict_status: str
     n_drug_records_raw: int
     n_filtered_matches: int
     n_direction_inferable: int
     n_direction_concordant: int
+    n_candidates: int = 0
     best_max_phase: Optional[int] = None
     best_pchembl: Optional[float] = None
     best_match_via: Optional[str] = None
     best_drug_chembl_id: Optional[str] = None
     best_drug_name: Optional[str] = None
     druggable_tier: Optional[str] = None
+    locus_colocalised_genes: Optional[str] = None
 
 
 MR_TARGET_VERDICT_REQUIRED: dict[str, type] = {
@@ -827,6 +842,8 @@ MR_TARGET_VERDICT_OPTIONAL: dict[str, type] = {
     "best_drug_chembl_id": str,
     "best_drug_name": str,
     "druggable_tier": str,
+    "n_candidates": int,
+    "locus_colocalised_genes": str,
 }
 
 

@@ -39,7 +39,9 @@ from repogen.analysis.mendelian_randomisation import (
     _validate_coloc_calibration_config,
     _summarise_gene_verdict,
     _write_mhc_excluded_sensitivity,
+    _lead_ld_pairs,
     annotate_cross_source,
+    annotate_loci,
     assign_confidence_tiers,
     clump_instruments,
     cochrans_q,
@@ -833,7 +835,8 @@ class TestStrictMatchMode:
     def test_entrez_fallback(self) -> None:
         cfg = MRDrugMatchConfig(match_mode="strict")
         gene = _gene_row(gene_ensembl_id="ENSG_NONE", gene_entrez_id=111)
-        raw, via = _resolve_drug_matches_by_id(gene, _rich_drug_targets(), cfg)
+        dt = _rich_drug_targets().assign(gene_ensembl_id=None)
+        raw, via = _resolve_drug_matches_by_id(gene, dt, cfg)
         assert via == "entrez"
         assert len(raw) == 4
 
@@ -842,8 +845,22 @@ class TestStrictMatchMode:
         gene = _gene_row(
             gene_ensembl_id="ENSG_NONE", gene_entrez_id=None, gene_uniprot_id="P00001"
         )
-        raw, via = _resolve_drug_matches_by_id(gene, _rich_drug_targets(), cfg)
+        dt = _rich_drug_targets().assign(gene_ensembl_id=None)
+        raw, via = _resolve_drug_matches_by_id(gene, dt, cfg)
         assert via == "uniprot"
+
+    def test_shared_entrez_id_does_not_join_another_gene(self) -> None:
+        # RPS17L (ENSG00000182774) shares Entrez 6218 with RPS17, whose rows
+        # carry RPS17's own Ensembl ID.
+        cfg = MRDrugMatchConfig(match_mode="strict", allow_symbol_fallback=False)
+        dt = _rich_drug_targets().assign(
+            gene_ensembl_id="ENSG00000184779", gene_symbol="RPS17", gene_entrez_id=6218,
+            gene_uniprot_id="P08708",
+        )
+        gene = _gene_row(gene_ensembl_id="ENSG00000182774", gene_symbol="RPS17L",
+                         gene_entrez_id=6218, gene_uniprot_id="P08708")
+        raw, via = _resolve_drug_matches_by_id(gene, dt, cfg)
+        assert via == "" and raw.empty
 
     def test_unambiguous_symbol_accepted(self) -> None:
         cfg = MRDrugMatchConfig(match_mode="strict")
@@ -949,11 +966,13 @@ class TestDrugMatchProvenance:
 
 
 class TestTargetVerdicts:
-    def test_actionable_status(self) -> None:
+    def test_candidate_status(self) -> None:
+        # DrugA: an inhibitor on a risk-raising gene, ChEMBL high confidence.
         cfg = MRDrugMatchConfig()
         matches = match_drugs_to_mr_gene(_gene_row(), _rich_drug_targets(), cfg)
         verdict = _summarise_gene_verdict(_gene_row(), raw_count=4, matches=matches, config=cfg)
-        assert verdict["verdict_status"] == "actionable"
+        assert verdict["verdict_status"] == "candidate"
+        assert verdict["n_candidates"] == 1
         assert verdict["n_filtered_matches"] == 4
         assert verdict["n_direction_inferable"] == 3  # inhibitor, agonist, activator
         assert verdict["best_drug_name"] is not None
@@ -961,6 +980,7 @@ class TestTargetVerdicts:
     def test_binder_only_status(self) -> None:
         cfg = MRDrugMatchConfig()
         dt = _rich_drug_targets().loc[lambda d: d["interaction_type"] == "other"].copy()
+        dt["confidence"] = "medium"
         matches = match_drugs_to_mr_gene(_gene_row(), dt, cfg)
         verdict = _summarise_gene_verdict(_gene_row(), raw_count=1, matches=matches, config=cfg)
         assert verdict["verdict_status"] == "binder_only"
@@ -981,6 +1001,93 @@ class TestTargetVerdicts:
         )
         assert verdict["verdict_status"] == "no_drug_record"
         assert verdict["n_drug_records_raw"] == 0
+
+
+class TestMatchStatus:
+    def _status(self, targets: pd.DataFrame, **gene) -> pd.Series:
+        m = match_drugs_to_mr_gene(_gene_row(**gene), targets, MRDrugMatchConfig())
+        return m.set_index("drug_name")["match_status"]
+
+    def test_ace_inhibitor_is_predicted_adverse(self) -> None:
+        # Lower ACE expression raises risk (negative estimate), so inhibiting
+        # ACE acts with the risk.
+        dt = _rich_drug_targets().iloc[[0]].assign(drug_name="CAPTOPRIL", gene_symbol="ACE")
+        status = self._status(dt, gene_symbol="ACE", mr_beta=-0.56)
+        assert status["CAPTOPRIL"] == "predicted_adverse"
+
+    def test_uncited_claim_is_never_a_candidate(self) -> None:
+        dt = _rich_drug_targets().iloc[[0]].assign(drug_name="CA2+", source="dgidb", confidence="low")
+        assert self._status(dt)["CA2+"] == "low_evidence"
+
+    def test_expression_down_on_a_risk_gene_is_concordant(self) -> None:
+        dt = _rich_drug_targets().iloc[[1]].assign(interaction_type="expression_down", confidence="medium")
+        m = match_drugs_to_mr_gene(_gene_row(mr_beta=0.4), dt, MRDrugMatchConfig())
+        assert bool(m.iloc[0]["direction_concordant"]) is True
+        assert m.iloc[0]["match_status"] == "candidate"
+
+    def test_unknown_interaction_type_has_no_direction(self) -> None:
+        dt = _rich_drug_targets().iloc[[1]].assign(interaction_type="cofactor", confidence="medium")
+        m = match_drugs_to_mr_gene(_gene_row(), dt, MRDrugMatchConfig())
+        assert m.iloc[0]["direction_concordant"] is None
+        assert m.iloc[0]["match_status"] == "binder"
+
+    def test_steiger_invalid_at_every_prevalence_has_no_candidate(self) -> None:
+        status = self._status(_rich_drug_targets(), steiger_invalid_all_k=True)
+        assert status["DrugA"] == "steiger_invalid"
+        verdict = _summarise_gene_verdict(
+            _gene_row(steiger_invalid_all_k=True), raw_count=4,
+            matches=match_drugs_to_mr_gene(_gene_row(steiger_invalid_all_k=True), _rich_drug_targets(),
+                                           MRDrugMatchConfig()),
+            config=MRDrugMatchConfig(),
+        )
+        assert verdict["verdict_status"] == "steiger_invalid" and verdict["n_candidates"] == 0
+
+    def test_mhc_gene_is_reported_apart(self) -> None:
+        status = self._status(_rich_drug_targets(), mhc_flag=True)
+        assert set(status) == {"mhc_region"}
+
+    def test_verdict_prefers_a_candidate_over_other_statuses(self) -> None:
+        matches = pd.DataFrame({"match_status": ["binder", "candidate", "predicted_adverse"]})
+        v = _summarise_gene_verdict(_gene_row(), raw_count=3, matches=matches, config=MRDrugMatchConfig())
+        assert v["verdict_status"] == "candidate"
+        matches = pd.DataFrame({"match_status": ["low_evidence", "predicted_adverse"]})
+        v = _summarise_gene_verdict(_gene_row(), raw_count=2, matches=matches, config=MRDrugMatchConfig())
+        assert v["verdict_status"] == "predicted_adverse_only"
+
+
+class TestAnnotateLoci:
+    def _results(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "gene_ensembl_id": ["G1", "G2", "G3", "G4", "G1", "G5"],
+            "gene_symbol": ["A", "B", "C", "D", "A", "E"],
+            "eqtl_source": ["eqtlgen"] * 4 + ["metabrain_cortex", "eqtlgen"],
+            "gene_chr": [1, 1, 1, 2, 1, 1],
+            "lead_instrument_snp": ["rs1", "rs1", "rs2", "rs9", "rs3", "rs4"],
+            "coloc_status": ["colocalised"] * 5 + ["distinct_signals"],
+        })
+
+    def test_same_lead_or_ld_share_a_locus(self) -> None:
+        module = "repogen.analysis.mendelian_randomisation"
+        with patch(f"{module}._lead_ld_pairs", return_value={frozenset(("rs2", "rs3"))}):
+            out = annotate_loci(self._results(), Path("ref"), Path("plink"))
+        loci = list(out["locus_colocalised_genes"])
+        # Loci follow lead SNPs: A in blood shares rs1 with B; A in brain
+        # leads with rs3, in LD with C's rs2; D is alone.
+        assert loci[:5] == ["B", "A", "A", "", "C"]
+        assert loci[5] is None
+
+    def test_ld_pairs_are_read_from_plink(self, tmp_path: Path) -> None:
+        def fake_plink(cmd, *a, **k):
+            out = cmd[cmd.index("--out") + 1]
+            Path(out + ".ld").write_text(
+                " CHR_A BP_A SNP_A CHR_B BP_B SNP_B R2\n"
+                " 1 100 rs1 1 200 rs2 0.35\n"
+                " 1 100 rs1 1 300 rs3 0.1\n"
+            )
+        leads = pd.DataFrame({"SNP": ["rs1", "rs2", "rs3"], "chr": [1, 1, 1]})
+        with patch("subprocess.run", side_effect=fake_plink):
+            pairs = _lead_ld_pairs(leads, tmp_path / "ref", Path("plink"))
+        assert pairs == {frozenset(("rs1", "rs2"))}
 
 
 class TestDrugMatchNullSafety:
