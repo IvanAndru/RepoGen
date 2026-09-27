@@ -180,8 +180,10 @@ def _build_context(combined: CombinedResults, plot_dir: Path) -> dict[str, Any]:
             columns=[
                 "gene_symbol",
                 "drug_name",
+                "match_status",
                 "confidence_tier",
                 "direction_concordant",
+                "locus_colocalised_genes",
             ],
         )
         if combined.mr_drug_matches is not None
