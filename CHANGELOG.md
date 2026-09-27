@@ -29,6 +29,22 @@ All notable changes to RepoGen are recorded here. The format follows
   error at 1 and the weighted median interpolates with second-order
   weights, both as TwoSampleMR does. The forest plot labels each estimate
   with its lead SNP. Results change.
+- Branch C calls a gene significant at 0.05 over the genes of its eQTL
+  source that produced a P value, the correction PGC3's SMR used, instead of
+  over every gene in the eQTL file, and colocalises every gene that passes.
+  Results change.
+- Branch C's colocalisation now equals R's coloc.abf: the outcome's prior SD
+  is 0.2 for a case-control trait, H0 and H3 are combined as coloc combines
+  them, and coloc's prior cap applies to regions of 10,000 SNPs or more.
+- Branch C's Steiger test uses the lead instrument, and for a case-control
+  outcome the liability scale at `study.population_prevalence` (TwoSampleMR's
+  `get_r_from_lor`) with cases plus controls as its sample size;
+  `steiger_binary_calibration` reads `liability`. Without a prevalence the
+  test is not run for a case-control outcome. The example config sets 0.0072,
+  schizophrenia's lifetime morbid risk.
+- A gene whose eQTL sources disagree in sign is decided by the source named
+  in `mr.disease_relevant_source` (brain cortex in the example config); with
+  none named it stays excluded from drug matching, as before.
 
 ### Added
 
@@ -43,11 +59,16 @@ All notable changes to RepoGen are recorded here. The format follows
   and usable SNP counts, palindromic SNPs kept and dropped, and the distance
   from the gene to the nearest instrument.
 - Branch C result columns `ivw_fe_se`, `ivw_mre_se` and `ivw_mre_pval`.
+- Config keys `mr.steiger_prevalence_sensitivity` and
+  `mr.disease_relevant_source`, and Branch C result columns
+  `steiger_invalid_all_k`, `steiger_k_sensitive` and `tissue_discordant`.
 
 ### Removed
 
 - Branch C result columns `ivw_re_beta` and `ivw_re_pval`, which held the
   additive random-effects IVW.
+- Branch C result columns `bonferroni_threshold_tested` and
+  `mr_significant_bonferroni_tested`, which the primary threshold now equals.
 
 ### Fixed
 

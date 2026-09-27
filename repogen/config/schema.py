@@ -954,6 +954,24 @@ class MRConfig(BaseModel):
 
     require_coloc: bool = Field(default=True, description="Gate drug matching on coloc PP.H4 ≥ threshold")
     require_steiger: bool = Field(default=False, description="Gate drug matching on Steiger directionality")
+    steiger_prevalence_sensitivity: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Further population prevalences, besides study.population_prevalence, "
+            "at which the Steiger direction is judged for a case-control outcome. "
+            "steiger_invalid_all_k marks a gene invalid at every one, "
+            "steiger_k_sensitive one whose call changes with the prevalence."
+        ),
+    )
+    disease_relevant_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "eQTL source whose estimate decides a gene whose sources disagree in "
+            "sign (tissue_discordant); its row keeps its tier and the other "
+            "source's row is marked direction_conflict. Unset leaves such genes "
+            "undecided: every row is direction_conflict."
+        ),
+    )
 
     n_workers: int = Field(default=1, ge=1, description="Number of parallel workers for per-gene MR")
     rule_threads: int | None = Field(
@@ -991,6 +1009,23 @@ class MRConfig(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError(f"Duplicate eQTL source names: {names}")
         return v
+
+    @field_validator("steiger_prevalence_sensitivity")
+    @classmethod
+    def validate_prevalences(cls, v: list[float]) -> list[float]:
+        if any(not 0 < k < 1 for k in v):
+            raise ValueError(f"Prevalences must lie strictly between 0 and 1: {v}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_disease_relevant_source(self) -> "MRConfig":
+        names = [s.source for s in self.eqtl_sources]
+        if self.disease_relevant_source is not None and self.disease_relevant_source not in names:
+            raise ValueError(
+                f"disease_relevant_source {self.disease_relevant_source!r} is not one of "
+                f"the configured eQTL sources {names}"
+            )
+        return self
 
 
 class OpenTargetsConfig(BaseModel):

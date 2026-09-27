@@ -658,15 +658,21 @@ MR_RESULT_OPTIONAL: dict[str, type] = {
     "pp_h4": float,
     "pp_h3": float,
     "n_snps_coloc": int,
-    # Additive per-source BH-FDR sensitivity track. The primary
-    # significance call (mr_significant / bonferroni_threshold) is unchanged;
-    # these expose the discovery-regime view over finite MR p-values.
+    # Per-source BH-FDR over finite MR P values, reported beside the
+    # Bonferroni call (mr_significant / bonferroni_threshold, 0.05 over the
+    # genes of the source that produced a P value).
     "mr_fdr_bh_q": float,
     "mr_significant_fdr_bh": bool,
-    "bonferroni_threshold_tested": float,
-    "mr_significant_bonferroni_tested": bool,
-    # Whether the Steiger liability transform fired.
+    # How the Steiger test was run: "liability" (case-control outcome at the
+    # population prevalence), "not_applicable" (quantitative outcome),
+    # "skipped_no_prevalence" or "missing_n" (not run). steiger_invalid_all_k:
+    # invalid at every prevalence tried; steiger_k_sensitive: the call
+    # changes with the prevalence.
     "steiger_binary_calibration": str,
+    "steiger_invalid_all_k": bool,
+    "steiger_k_sensitive": bool,
+    # The other eQTL source is nominally significant with the opposite sign.
+    "tissue_discordant": bool,
     # Gene anchor (eQTL-loader coordinate; may be min-SNP-pos) and
     # additive MHC-region flag (Ensembl-membership derived; coordinate fallback
     # opt-in). mhc_flag_method records how the flag was computed.
