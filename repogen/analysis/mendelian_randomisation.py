@@ -1794,25 +1794,21 @@ def cochrans_q(
     return q, q_pval
 
 
-def ivw_random_effects(
+def ivw_multiplicative_random_effects(
     beta_exp: np.ndarray, se_exp: np.ndarray,
     beta_out: np.ndarray, se_out: np.ndarray,
 ) -> tuple[float, float, float]:
-    """IVW random-effects (DerSimonian-Laird)."""
-    fe_beta, _, _ = ivw_fixed_effects(beta_exp, se_exp, beta_out, se_out)
-    q, _ = cochrans_q(beta_exp, se_exp, beta_out, se_out, fe_beta)
+    """IVW with multiplicative random effects. Two or more instruments.
 
-    k = len(beta_exp)
-    w = 1.0 / se_out**2
-
-    c = np.sum(w * beta_exp**2) - np.sum((w * beta_exp**2) ** 2) / np.sum(w * beta_exp**2)
-    tau2 = max(0.0, (q - (k - 1)) / c)
-
-    w_re = 1.0 / (se_out**2 + tau2)
-    beta_mr = np.sum(w_re * beta_exp * beta_out) / np.sum(w_re * beta_exp**2)
-    se_mr = 1.0 / np.sqrt(np.sum(w_re * beta_exp**2))
-    z = beta_mr / se_mr
-    pval = 2.0 * scipy.stats.norm.sf(abs(z))
+    The fixed-effect estimate, with its SE scaled by the residual standard
+    error sqrt(Q / (k - 1)) floored at 1, so heterogeneity widens the
+    interval and underdispersion never narrows it (the default of the MR
+    guidelines, Burgess et al. 2023, and of TwoSampleMR's mr_ivw).
+    """
+    beta_mr, se_fe, _ = ivw_fixed_effects(beta_exp, se_exp, beta_out, se_out)
+    q, _ = cochrans_q(beta_exp, se_exp, beta_out, se_out, beta_mr)
+    se_mr = se_fe * max(1.0, float(np.sqrt(q / (len(beta_exp) - 1))))
+    pval = 2.0 * scipy.stats.norm.sf(abs(beta_mr / se_mr))
     return float(beta_mr), float(se_mr), float(pval)
 
 
@@ -1820,7 +1816,7 @@ def mr_egger(
     beta_exp: np.ndarray, se_exp: np.ndarray,
     beta_out: np.ndarray, se_out: np.ndarray,
 ) -> dict:
-    """MR-Egger regression. k≥3."""
+    """MR-Egger regression, as TwoSampleMR's mr_egger_regression. k≥3."""
     sign = np.sign(beta_exp)
     sign[sign == 0] = 1
     bx = beta_exp * sign
@@ -1842,7 +1838,9 @@ def mr_egger(
 
     resid = by - X @ coef
     k = len(bx)
-    sigma2 = float(np.sum(w * resid**2) / (k - 2))
+    # The residual variance is floored at 1, so an underdispersed fit cannot
+    # make the standard errors smaller than their first-order values.
+    sigma2 = max(float(np.sum(w * resid**2) / (k - 2)), 1.0)
 
     cov_matrix = sigma2 * np.linalg.inv(XtWX)
     se_coef = np.sqrt(np.diag(cov_matrix))
@@ -1864,44 +1862,46 @@ def mr_egger(
     }
 
 
+def _interpolated_weighted_median(beta_iv: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Weighted median of each row of ``beta_iv`` (Bowden et al. 2016).
+
+    The estimates are sorted, each is placed at the middle of its share of
+    the total weight, and the median is interpolated between the two that
+    straddle one half. ``weights`` holds one weight per column (SNP).
+    """
+    b = np.atleast_2d(beta_iv)
+    order = np.argsort(b, axis=1, kind="stable")
+    b_sorted = np.take_along_axis(b, order, axis=1)
+    w_sorted = np.asarray(weights, dtype=float)[order]
+    cum = (np.cumsum(w_sorted, axis=1) - 0.5 * w_sorted) / w_sorted.sum(axis=1, keepdims=True)
+    below = (cum < 0.5).sum(axis=1) - 1
+    rows = np.arange(b.shape[0])
+    lo, hi = b_sorted[rows, below], b_sorted[rows, below + 1]
+    return lo + (hi - lo) * (0.5 - cum[rows, below]) / (cum[rows, below + 1] - cum[rows, below])
+
+
 def weighted_median(
     beta_exp: np.ndarray, se_exp: np.ndarray,
     beta_out: np.ndarray, se_out: np.ndarray,
     n_boot: int = 1000, seed: int = 42,
 ) -> tuple[float, float, float]:
-    """Weighted median estimator. k≥3."""
-    beta_iv = beta_out / beta_exp
-    weights = 1.0 / (se_out**2 / beta_exp**2)
+    """Weighted median estimator, as TwoSampleMR's mr_weighted_median. k≥3.
 
-    order = np.argsort(beta_iv)
-    beta_sorted = beta_iv[order]
-    w_sorted = weights[order]
-    cum_w = np.cumsum(w_sorted)
-    total_w = cum_w[-1]
-    idx = np.searchsorted(cum_w, total_w / 2.0)
-    idx = min(idx, len(beta_sorted) - 1)
-    beta_wm = float(beta_sorted[idx])
+    Each SNP's ratio estimate is weighted by the inverse of its second-order
+    variance. The SE is the standard deviation of the estimate over a
+    parametric bootstrap that redraws both sets of SNP effects and keeps the
+    weights; ``seed`` fixes the draws.
+    """
+    beta_iv = beta_out / beta_exp
+    weights = 1.0 / (se_out**2 / beta_exp**2 + beta_out**2 * se_exp**2 / beta_exp**4)
+    beta_wm = float(_interpolated_weighted_median(beta_iv, weights)[0])
 
     rng = np.random.default_rng(seed)
-    boot_betas = np.empty(n_boot)
-    for b in range(n_boot):
-        bx_boot = beta_exp + rng.normal(0, se_exp)
-        by_boot = beta_out + rng.normal(0, se_out)
-        biv_boot = by_boot / bx_boot
-        w_boot = 1.0 / (se_out**2 / bx_boot**2)
-        o = np.argsort(biv_boot)
-        cw = np.cumsum(w_boot[o])
-        i = np.searchsorted(cw, cw[-1] / 2.0)
-        i = min(i, len(biv_boot) - 1)
-        boot_betas[b] = biv_boot[o][i]
-
-    se_wm = float(np.std(boot_betas, ddof=1))
-    if se_wm > 0:
-        z = beta_wm / se_wm
-        pval = float(2 * scipy.stats.norm.sf(abs(z)))
-    else:
-        pval = 1.0
-
+    shape = (n_boot, len(beta_exp))
+    bx_boot = rng.normal(beta_exp, se_exp, size=shape)
+    by_boot = rng.normal(beta_out, se_out, size=shape)
+    se_wm = float(np.std(_interpolated_weighted_median(by_boot / bx_boot, weights), ddof=1))
+    pval = float(2 * scipy.stats.norm.sf(abs(beta_wm / se_wm))) if se_wm > 0 else 1.0
     return beta_wm, se_wm, pval
 
 
@@ -2907,36 +2907,33 @@ def _run_mr_for_gene(
         **instrument_info,
     }
 
-    if k == 1:
-        beta_mr, se_mr, pval = wald_ratio(bx[0], sx[0], by[0], sy[0])
-        result["mr_method"] = "wald"
-        result["mr_beta"] = beta_mr
-        result["mr_se"] = se_mr
-        result["mr_pval"] = pval
-        result["heterogeneity_warning"] = False
-    else:
+    # The primary estimate is the lead instrument's Wald ratio (the lead is
+    # the first row, chosen on eQTL strength alone), as SMR tests its top
+    # cis-eQTL SNP; colocalisation then asks whether that signal is the
+    # GWAS signal. Instruments of one gene that disagree usually do so
+    # because only one of them is, so an average over them answers a
+    # different question. The multi-instrument estimates are reported
+    # alongside and never decide significance.
+    beta_mr, se_mr, pval = wald_ratio(bx[0], sx[0], by[0], sy[0])
+    result["mr_method"] = "wald"
+    result["mr_beta"] = beta_mr
+    result["mr_se"] = se_mr
+    result["mr_pval"] = pval
+    result["heterogeneity_warning"] = False
+
+    if k >= 2:
         fe_beta, fe_se, fe_pval = ivw_fixed_effects(bx, sx, by, sy)
         result["ivw_fe_beta"] = fe_beta
+        result["ivw_fe_se"] = fe_se
         result["ivw_fe_pval"] = fe_pval
+        _, mre_se, mre_pval = ivw_multiplicative_random_effects(bx, sx, by, sy)
+        result["ivw_mre_se"] = mre_se
+        result["ivw_mre_pval"] = mre_pval
 
         q_stat, q_pval = cochrans_q(bx, sx, by, sy, fe_beta)
         result["q_stat"] = q_stat
         result["q_pval"] = q_pval
         result["heterogeneity_warning"] = q_pval < 0.05
-
-        if q_pval < 0.05:
-            re_beta, re_se, re_pval = ivw_random_effects(bx, sx, by, sy)
-            result["mr_method"] = "ivw_re"
-            result["mr_beta"] = re_beta
-            result["mr_se"] = re_se
-            result["mr_pval"] = re_pval
-            result["ivw_re_beta"] = re_beta
-            result["ivw_re_pval"] = re_pval
-        else:
-            result["mr_method"] = "ivw_fe"
-            result["mr_beta"] = fe_beta
-            result["mr_se"] = fe_se
-            result["mr_pval"] = fe_pval
 
         if k >= 3:
             egger = mr_egger(bx, sx, by, sy)

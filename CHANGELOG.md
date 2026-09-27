@@ -20,6 +20,15 @@ All notable changes to RepoGen are recorded here. The format follows
   are kept. Palindromic SNPs are kept when allele frequencies in the eQTL data
   and the GWAS confirm their strand, and a position join is attempted only
   between data on the same genome build. Results change.
+- Branch C's estimate for each gene is the Wald ratio of its lead
+  instrument, the test SMR makes, and it alone decides significance. Genes
+  with several instruments no longer switch to an additive random-effects
+  IVW when their instruments disagree; IVW with fixed and with
+  multiplicative random effects, Cochran's Q, MR-Egger and the weighted
+  median are reported beside it. MR-Egger floors its residual standard
+  error at 1 and the weighted median interpolates with second-order
+  weights, both as TwoSampleMR does. The forest plot labels each estimate
+  with its lead SNP. Results change.
 
 ### Added
 
@@ -33,6 +42,12 @@ All notable changes to RepoGen are recorded here. The format follows
   instrument, whether it is palindromic or outside the LD panel, candidate
   and usable SNP counts, palindromic SNPs kept and dropped, and the distance
   from the gene to the nearest instrument.
+- Branch C result columns `ivw_fe_se`, `ivw_mre_se` and `ivw_mre_pval`.
+
+### Removed
+
+- Branch C result columns `ivw_re_beta` and `ivw_re_pval`, which held the
+  additive random-effects IVW.
 
 ### Fixed
 

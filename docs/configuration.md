@@ -314,6 +314,19 @@ reference panel, so when a gene has several usable SNPs its instruments are
 the clumped panel SNPs and the lead instrument is the strongest of them; a
 gene with a single usable SNP keeps it whether or not the panel has it.
 
+Each gene's estimate (`mr_beta`, `mr_se`, `mr_pval`, method `wald`) is the
+Wald ratio of its lead instrument, with a standard error that includes the
+eQTL error, so its test is SMR's; significance, colocalisation and drug
+matching all use it. Instruments of one gene that disagree usually do so
+because only one of them carries the GWAS signal, so averaging them answers
+a different question. For genes with two or more instruments the results
+also report IVW with fixed effects (`ivw_fe_*`) and with multiplicative
+random effects (`ivw_mre_*`, the same estimate with its SE widened by
+heterogeneity), Cochran's Q (`q_stat`, `q_pval`; `heterogeneity_warning`
+when its P is below 0.05), and from three instruments MR-Egger and the
+weighted median, computed as TwoSampleMR computes them. These are
+descriptive.
+
 The `F > 10` convention guards against weak-instrument bias. `require_coloc`
 defaults to on because an MR estimate without colocalisation cannot distinguish
 a genuinely shared causal variant from two distinct variants in LD, which is
