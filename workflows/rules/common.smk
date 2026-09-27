@@ -19,7 +19,7 @@ genes, 18,501 in the latest Branch C run) on KCL CREATE:
     atc_enrichment              <1m            60m
     negative_correlation        19m56, 5.2 GB  60m, 16 GB
     load_drug_targets           37m            120m
-    mendelian_randomisation     1h18, 22 GB    6h, 32 GB
+    mendelian_randomisation     1h27, 23 GB    6h, 32 GB
 
 Runtimes carry roughly 3-6x headroom; a timeout is recoverable because
 Snakemake resubmits once. Memory is deliberately less aggressive, since an
