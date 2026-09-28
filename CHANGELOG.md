@@ -6,6 +6,13 @@ All notable changes to RepoGen are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-28
+
+Branch C, the Mendelian randomisation branch, is revised throughout:
+instrument choice, the estimate, significance, colocalisation, the Steiger
+test and the drug layer. Its results change and its result tables drop
+columns, hence the major version. Branches A and B are unchanged.
+
 ### Changed
 
 - Branch C runs faster with identical results. The GWAS is indexed by rsID
@@ -55,6 +62,8 @@ All notable changes to RepoGen are recorded here. The format follows
   interaction types `expression_down` and `expression_up` now carry a
   direction and any other type counts as unknown rather than discordant.
   Results change.
+- CI builds and tests the container image on every pull request and push
+  to `main`; images are still published only for release tags.
 
 ### Added
 
@@ -85,6 +94,9 @@ All notable changes to RepoGen are recorded here. The format follows
 
 ### Fixed
 
+- GWAS preparation stopped with an error on a case-control GWAS whose
+  per-variant sample size varies, as PGC3 schizophrenia wave 3's does: it
+  logged the median without calling it. The 1.0.1 image is affected.
 - Branch C read whichever `*.txt*` or `*.tsv*` file the eQTLGen directory
   listed first. It now ignores README and checksum files and stops with an
   error if more than one table remains.
@@ -180,5 +192,6 @@ documented in `workflows/rules/common.smk`.
   which, and where to get them.
 - macOS is not supported; several external tools ship as Linux binaries only.
 
+[2.0.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v2.0.0
 [1.0.1]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.1
 [1.0.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.0
