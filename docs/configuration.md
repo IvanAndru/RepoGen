@@ -253,7 +253,7 @@ Scores how strongly each drug signature reverses the disease signature.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `correlation_method` | `spearman` | Only `spearman` is supported in v1.0 |
+| `correlation_method` | `spearman` | Only `spearman` is supported |
 | `min_overlapping_genes` | `50` | Minimum shared genes before a correlation is computed |
 | `gene_set_mode` | `landmark` | Which gene space to correlate over |
 | `match_confidence_threshold` | `pubchem_cid` | Minimum drug-match confidence: `inchikey` > `pubchem_cid` > `name` |
