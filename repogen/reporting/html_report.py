@@ -181,6 +181,7 @@ def _build_context(combined: CombinedResults, plot_dir: Path) -> dict[str, Any]:
                 "gene_symbol",
                 "drug_name",
                 "match_status",
+                "match_list",
                 "confidence_tier",
                 "direction_concordant",
                 "locus_colocalised_genes",

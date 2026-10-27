@@ -3,6 +3,10 @@ rule mendelian_randomisation:
         gwas=f"{PREP_DIR}/gwas_mr.parquet",
         gwas_meta=f"{PREP_DIR}/gwas_mr.meta.json",
         drug_targets=f"{DRUG_DIR}/drug_targets.parquet",
+        # Curated mechanism pairs the table lacks, and ChEMBL for phases,
+        # target families and binder directions (records 042 to 044).
+        drug_routes=f"{DRUG_DIR}/drug_targets_routes.parquet",
+        chembl=f"{DRUGS_RES_DIR}/chembl_35.db",
     output:
         results=f"{MR_DIR}/mr_results.parquet",
         drugs=f"{MR_DIR}/mr_drug_matches.parquet",
@@ -24,6 +28,8 @@ rule mendelian_randomisation:
             --gwas {input.gwas} \
             --gwas-metadata {input.gwas_meta} \
             --drug-targets {input.drug_targets} \
+            --drug-target-routes {input.drug_routes} \
+            --chembl-sqlite {input.chembl} \
             --output-dir {params.mr_dir} \
             --threads {threads} \
             2>&1 | tee {log}

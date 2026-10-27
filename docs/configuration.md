@@ -358,19 +358,50 @@ row of such a gene is `direction_conflict`.
 Drug matching runs for significant, colocalised genes. With
 `drug_match.match_mode: strict` a gene is joined to the drug table by
 Ensembl ID, then Entrez, UniProt and an unambiguous symbol; an Entrez or
-UniProt join never brings in rows annotated to a different Ensembl gene. Each
-match gets a `match_status`. It is a `candidate` when the drug acts against
-the genetic risk (lowering a risk-raising gene, raising a protective one) on
-interaction evidence the drug loader rates medium or high: a curated
-mechanism or measured affinity in ChEMBL, or a DGIdb claim that cites a
-publication. Otherwise it is `mhc_region` (the gene lies in the MHC; reported
-apart, never a candidate), `low_evidence` (an uncited claim), `binder` (no
-direction), `predicted_adverse` (the drug would act with the risk) or
-`steiger_invalid` (the gene's Steiger direction is invalid at every
-prevalence tried). A gene's verdict in `mr_target_verdicts` follows its best
-match: `candidate`, `steiger_invalid`, `predicted_adverse_only`,
-`binder_only`, `low_evidence_only`, `mhc_region`, or `no_filtered_match` and
-`no_drug_record` when nothing passes. Every colocalised gene lists in
+UniProt join never brings in rows annotated to a different Ensembl gene.
+
+What a match can claim depends on its evidence, recorded in
+`evidence_class`. A curated ChEMBL mechanism gives the drug's direction in
+ChEMBL's own classification of its action type, taken from the parent
+compound; `target_route` says how the mechanism reaches the gene. On a single
+protein or on a nucleic-acid target with one gene (the mRNA of an antisense
+or RNAi drug) the match is in the main list. Through a member of a protein
+complex or family it is in the second list (`match_list: second`), reported
+in full but kept apart, because a member need not be the subunit the drug
+acts on; where ChEMBL curates the binding site, complex members outside it
+are `off_site` and get no direction. A DGIdb claim counts as target evidence
+only from a source that asserts drug-target interactions (ChEMBL, Guide to
+Pharmacology, TTD, TEND, the clinical-trial target set, TALC), with the
+direction of its interaction type and the drug's clinical phase from ChEMBL;
+pharmacogenomic, biomarker and therapy-listing claims are listed
+(`match_list: listed`) and never carry a call. A measured affinity without a
+curated mechanism is a binder (`match_list: binder`), reported only at or
+above `drug_match.binder_floor`: by default pChEMBL 7.5 for kinases, 7 for
+GPCRs and nuclear receptors, 5 for ion channels and 6 otherwise.
+`drug_match.binder_direction_classes` can give binders a direction from
+ChEMBL activity data; such binders go to the second list. The step needs the
+ChEMBL database (`--chembl-sqlite`) and the curated pairs the drug table
+lacks (`drug_targets_routes.parquet`); the workflow passes both. A drug
+table written before these columns existed is judged by the earlier rule.
+
+Each match gets a `match_status`. It is a `candidate` when the drug acts
+against the genetic risk (lowering a risk-raising gene, raising a protective
+one) on evidence that may carry a call. Otherwise it is `mhc_region` (the
+gene lies in the MHC; reported apart, never a candidate), `off_site`,
+`low_evidence` (evidence that cannot carry a call), `binder` (no direction),
+`predicted_adverse` (the drug would act with the risk) or `steiger_invalid`
+(the gene's Steiger direction is invalid at every prevalence tried). A
+gene's verdict in `mr_target_verdicts` follows its best match outside the
+second list: `candidate`, `steiger_invalid`, `predicted_adverse_only`,
+`binder_only`, `low_evidence_only`, `off_site_only`, `mhc_region`, or
+`no_filtered_match` and `no_drug_record` when nothing passes;
+`second_list_status` gives the second list's. `mr_drug_compounds` summarises
+each drug across its genes as beneficial, adverse, mixed or undirected, and
+`mr_drug_calibration.json` reports whether the eligible genes are drug
+targets more often than tested genes with as many instruments, and how the
+main list's directed calls divide. Cross-branch convergence, the export and
+the summary plot leave out the second list and `off_site` rows. Every
+colocalised gene lists in
 `locus_colocalised_genes` the other colocalised genes whose lead SNP is the
 same as its own or in LD with it (r^2 > 0.1 in the clumping panel); which of
 them is causal is not decided.

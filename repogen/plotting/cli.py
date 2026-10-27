@@ -256,7 +256,11 @@ def cmd_mr_drug_summary(args: argparse.Namespace) -> None:
     from repogen.plotting.base import save_figure
     from repogen.plotting.mr import plot_mr_drug_summary
 
-    df = _read_results(args.mr_drug_matches, "MR drug matches parquet", allow_empty=True)
+    from repogen.reporting.combine_results import primary_mr_matches
+
+    df = primary_mr_matches(
+        _read_results(args.mr_drug_matches, "MR drug matches parquet", allow_empty=True)
+    )
 
     if df.empty:
         remove_if_exists(args.figure)
