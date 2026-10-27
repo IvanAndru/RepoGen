@@ -21,6 +21,28 @@ All notable changes to RepoGen are recorded here. The format follows
 - `drug_targets_routes.parquet`, written beside the table, holds the
   curated mechanism pairs the table lacks (members of complexes and
   families, nucleic-acid targets) for Branch C.
+- Branch C writes `mr_drug_compounds` (each drug across its genes:
+  beneficial, adverse, mixed or undirected) and `mr_drug_calibration.json`
+  (whether eligible genes are drug targets more often than tested genes
+  with as many instruments, and how the main list's directed calls divide).
+
+### Changed
+
+- Branch C's drug layer judges each match by its evidence. A drug's
+  direction comes from its curated ChEMBL mechanism in ChEMBL's own
+  classification, so partial agonists count as raising and releasing agents
+  as lowering their target's activity, and RNAi, antisense and gene
+  therapies are matched to their genes. Calls through members of complexes
+  and families form a second list, with members outside a curated binding
+  site marked `off_site`. DGIdb claims count as target evidence only from
+  sources that assert drug-target interactions, with the drug's phase from
+  ChEMBL; an `antibody` claim has no direction. Binders are reported only
+  above a potency floor set by target family (`drug_match.binder_floor`),
+  and can be given a direction from activity data
+  (`drug_match.binder_direction_classes`, off by default). The step reads
+  the ChEMBL database and the routes file. Results change.
+- Cross-branch convergence, the export and the MR drug summary plot leave
+  out Branch C's second list and `off_site` rows.
 
 ## [2.0.0] - 2026-09-28
 

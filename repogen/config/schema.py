@@ -10,7 +10,7 @@ OpenTargetsConfig; expanded StudyConfig, MagmaConfig, DrugEnrichmentConfig.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -866,6 +866,29 @@ class MRDrugMatchConfig(BaseModel):
             "druggable_tier). When set, adds a druggable_tier column to mr_results "
             "and enables the secondary druggable-restricted significance track "
             ". None = off (druggable_tier stays absent/NA)."
+        ),
+    )
+    binder_floor: Union[Literal["family"], float, None] = Field(
+        default="family",
+        description=(
+            "Potency floor for reporting a drug that binds a target without a known "
+            "direction (record 042). 'family' = pChEMBL 7.5 for kinases, 7 for GPCRs "
+            "and nuclear receptors, 5 for ion channels, 6 otherwise (target family "
+            "from ChEMBL's protein classification); a number = one floor for all; "
+            "None = no floor. Binders below the floor are not reported."
+        ),
+    )
+    binder_direction_classes: list[
+        Literal["curated_activity", "inferred_enzyme", "inferred_kinase_binding"]
+    ] = Field(
+        default_factory=list,
+        description=(
+            "Ways to give a binder a direction (record 043), each used only after it "
+            "passes validation: 'curated_activity' (ChEMBL's curated action types on "
+            "activities), 'inferred_enzyme' (a functional IC50 or Ki on an enzyme at "
+            "its family floor), 'inferred_kinase_binding' (a kinase Kd at pKd >= "
+            "7.5). Directed binders are reported in the second list only. Empty = "
+            "binders stay undirected."
         ),
     )
 

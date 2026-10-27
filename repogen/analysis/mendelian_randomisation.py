@@ -33,6 +33,17 @@ from repogen.config.schema import (
     MRDrugMatchConfig,
     ReferenceConfig,
 )
+from repogen.data.chembl_drug_info import (
+    BINDER_DIRECTION_CLASSES,
+    DGIDB_BINDING_SOURCES,
+    DGIDB_TARGET_SOURCES,
+    FAMILY_FLOORS,
+    ChemblDrugInfo,
+    dgidb_direction,
+    load_chembl_drug_info,
+    parse_dgidb_claims,
+)
+from repogen.data.drug_mechanisms import MAIN_LIST_ROUTES, MEMBER_ROUTES
 from repogen.data.mhc_annotation import add_mhc_flag, load_mhc_gene_annotation
 from repogen.data.schemas import GWASMetadata
 from repogen.utils.constants import mhc_interval
@@ -2527,15 +2538,13 @@ def _is_true(value: object) -> bool:
 
 
 def _match_status(gene_result: pd.Series, concordant: bool | None, confidence: object) -> str:
-    """Where one gene-drug match stands.
+    """Where one gene-drug match stands, for a drug table without routes.
 
-    ``candidate``: the drug acts in the direction that opposes the genetic
-    risk, on interaction evidence the loader rates medium or high. Otherwise,
-    in this order: ``mhc_region`` (the gene lies in the MHC; reported, never
-    a candidate), ``low_evidence`` (an uncited interaction claim), ``binder``
-    (no direction), ``predicted_adverse`` (the drug would act with the risk,
-    as ACE inhibitors would for ACE), ``steiger_invalid`` (a candidate but
-    for a Steiger direction invalid at every prevalence tried).
+    The 2.0.0 rule, kept for tables written before the route columns
+    (records 042, 045): ``candidate`` when the drug acts against the
+    genetic risk on interaction evidence the loader rates medium or high.
+    Otherwise, in this order: ``mhc_region``, ``low_evidence``, ``binder``,
+    ``predicted_adverse``, ``steiger_invalid``.
     """
     if _is_true(gene_result.get("mhc_flag")):
         return "mhc_region"
@@ -2550,6 +2559,38 @@ def _match_status(gene_result: pd.Series, concordant: bool | None, confidence: o
     return "candidate"
 
 
+def _route_match_status(gene_result: pd.Series, direction: str, sufficient: bool,
+                        off_site: bool = False) -> tuple[str, bool | None]:
+    """Status of one match from its evidence and direction (records 041 to 044).
+
+    In this order: ``mhc_region`` (the gene lies in the MHC), ``off_site``
+    (a complex member outside the drug's curated binding site),
+    ``low_evidence`` (no evidence that may carry a candidate: a claim that
+    asserts no drug-target interaction, a DGIdb target claim on a drug
+    below the phase floor or without a ChEMBL ID, a binding claim without
+    a potency), ``binder`` (no direction), ``predicted_adverse`` (the drug
+    acts with the risk), ``steiger_invalid``, ``candidate``. Returns the
+    status and whether the direction opposes the risk.
+    """
+    beta = gene_result.get("mr_beta")
+    concordant = None
+    if direction in ("negative", "positive") and beta is not None and beta != 0:
+        concordant = bool((direction == "negative") == (beta > 0))
+    if _is_true(gene_result.get("mhc_flag")):
+        return "mhc_region", concordant
+    if off_site:
+        return "off_site", None
+    if not sufficient:
+        return "low_evidence", concordant
+    if concordant is None:
+        return "binder", None
+    if not concordant:
+        return "predicted_adverse", concordant
+    if _is_true(gene_result.get("steiger_invalid_all_k")):
+        return "steiger_invalid", concordant
+    return "candidate", concordant
+
+
 # A gene's verdict is set by the first of its matches' statuses in this order.
 _VERDICT_BY_STATUS = (
     ("candidate", "candidate"),
@@ -2557,22 +2598,96 @@ _VERDICT_BY_STATUS = (
     ("predicted_adverse", "predicted_adverse_only"),
     ("binder", "binder_only"),
     ("low_evidence", "low_evidence_only"),
+    ("off_site", "off_site_only"),
     ("mhc_region", "mhc_region"),
 )
+
+# Lists in the match table (record 042): ``main`` holds calls on curated
+# single-protein and nucleic-acid mechanisms and on typed claims of DGIdb
+# drug-target sources; ``binder`` binding without a known direction above the
+# family floor; ``second`` calls through members of complexes and families and
+# directed binders (record 043); ``listed`` everything that cannot carry a call.
+MATCH_LISTS: tuple[str, ...] = ("main", "binder", "second", "listed")
+_LIST_RANK = {name: i for i, name in enumerate(MATCH_LISTS)}
 
 
 def _drug_match_rank_keys(config: MRDrugMatchConfig) -> tuple[list[str], list[bool]]:
     """Sort keys for within-gene drug ranking, per direction_policy."""
     if config.direction_policy == "prefer_inferable":
         return (
-            ["direction_inferable", "has_mechanism_text", "max_phase", "pchembl_value"],
-            [False, False, False, False],
+            ["_list_rank", "direction_inferable", "has_mechanism_text", "max_phase", "pchembl_value"],
+            [True, False, False, False, False],
         )
     # 'all' and 'inferable_only' rank by evidence quality (no direction preference).
     return (
-        ["has_mechanism_text", "max_phase", "pchembl_value"],
-        [False, False, False],
+        ["_list_rank", "has_mechanism_text", "max_phase", "pchembl_value"],
+        [True, False, False, False],
     )
+
+
+def _text_or(value: object, default: str) -> str:
+    return str(value) if _has_text(value) else default
+
+
+def _route_evidence(row, config: MRDrugMatchConfig, chembl_info: ChemblDrugInfo | None) -> dict | None:
+    """Evidence class, direction and list of one drug-table row (records 042 to 044, 047).
+
+    Returns None for a binder below its potency floor, which is not
+    reported (record 042).
+    """
+    route = _text_or(getattr(row, "target_route", None), "none")
+    claims = parse_dgidb_claims(getattr(row, "dgidb_sources", None))
+    target_types = [t for s, t in claims if s in DGIDB_TARGET_SOURCES]
+    has_target_claim = any(s in DGIDB_TARGET_SOURCES for s, _ in claims)
+    has_binding_claim = any(s in DGIDB_BINDING_SOURCES for s, _ in claims)
+    source = str(getattr(row, "source", "") or "")
+    pch = pd.to_numeric(getattr(row, "pchembl_value", None), errors="coerce")
+    drug_id = str(getattr(row, "drug_chembl_id", "") or "")
+    action_classes = chembl_info.action_classes if chembl_info is not None else None
+
+    if route == "off_site":
+        return {"evidence_class": "curated_mechanism", "drug_direction": "none",
+                "direction_source": "none", "match_list": "listed", "sufficient": True,
+                "off_site": True}
+    if route in MAIN_LIST_ROUTES or route in MEMBER_ROUTES:
+        direction = _text_or(getattr(row, "mechanism_direction", None), "none")
+        return {"evidence_class": "curated_mechanism", "drug_direction": direction,
+                "direction_source": "mechanism" if direction != "none" else "none",
+                "match_list": "main" if route in MAIN_LIST_ROUTES else "second",
+                "sufficient": True, "off_site": False}
+    if has_target_claim:
+        direction = dgidb_direction(target_types, action_classes)
+        phase = chembl_info.phase.get(drug_id) if chembl_info is not None else None
+        sufficient = (
+            drug_id.startswith("CHEMBL") and phase is not None and not np.isnan(phase)
+            and (config.min_phase is None or phase >= config.min_phase)
+        )
+        return {"evidence_class": "dgidb_target", "drug_direction": direction,
+                "direction_source": "dgidb" if direction != "none" else "none",
+                "match_list": "main", "sufficient": bool(sufficient), "off_site": False}
+    if pd.notna(pch) and ("chembl" in source or "pdsp" in source):
+        uniprot = getattr(row, "gene_uniprot_id", None)
+        if config.binder_floor == "family":
+            floor = chembl_info.floor_for(uniprot) if chembl_info is not None else FAMILY_FLOORS["other"]
+        else:
+            floor = config.binder_floor
+        if floor is not None and pch < floor:
+            return None
+        direction, direction_source, match_list = "none", "none", "binder"
+        if chembl_info is not None and config.binder_direction_classes:
+            hit = chembl_info.binder_directions.get((drug_id, str(uniprot)), {})
+            for cls in BINDER_DIRECTION_CLASSES:
+                if cls in config.binder_direction_classes and hit.get(cls, "none") != "none":
+                    direction_source, direction, match_list = cls, hit[cls], "second"
+                    break
+        return {"evidence_class": "binding", "drug_direction": direction,
+                "direction_source": direction_source, "match_list": match_list,
+                "sufficient": True, "off_site": False}
+    if has_binding_claim:
+        return {"evidence_class": "binding", "drug_direction": "none", "direction_source": "none",
+                "match_list": "listed", "sufficient": False, "off_site": False}
+    return {"evidence_class": "non_target", "drug_direction": "none", "direction_source": "none",
+            "match_list": "listed", "sufficient": False, "off_site": False}
 
 
 def _build_drug_match_records(
@@ -2580,13 +2695,16 @@ def _build_drug_match_records(
     raw_matches: pd.DataFrame,
     match_via: str,
     config: MRDrugMatchConfig,
+    chembl_info: ChemblDrugInfo | None = None,
 ) -> pd.DataFrame:
     """Apply drug-match filters and build the per-(gene, drug) record frame.
 
-    Adds additive provenance/ranking columns (``match_via``, ``direction_inferable``,
-    ``mechanism_of_action``, ``has_mechanism_text``, ``action_type``,
-    ``drug_target_source``, ``drug_target_confidence``, ``drug_match_rank``). Legacy
-    columns/values are preserved so default config reproduces the previous row set.
+    With a drug table that carries routes (``target_route``), each row's
+    evidence class, direction and list follow records 042 to 044 and 047
+    (:func:`_route_evidence`); a table without them is judged by the 2.0.0
+    rule (:func:`_match_status`). Both give the columns ``match_list``,
+    ``target_route``, ``drug_direction``, ``evidence_class`` and
+    ``direction_source`` besides the provenance and ranking columns.
     """
     if raw_matches.empty:
         return pd.DataFrame()
@@ -2597,6 +2715,7 @@ def _build_drug_match_records(
         return pd.DataFrame()
 
     m = raw_matches
+    routed = "target_route" in m.columns
 
     # min_phase filter (with scope), mirroring Branch A semantics (max_phase >= x).
     if config.min_phase is not None and "max_phase" in m.columns:
@@ -2617,7 +2736,7 @@ def _build_drug_match_records(
         m = m.loc[pch.isna() | (pch >= config.min_pchembl)]
 
     # direction_policy: drop direction-ambiguous rows when 'inferable_only'.
-    if config.direction_policy == "inferable_only" and not m.empty:
+    if config.direction_policy == "inferable_only" and not m.empty and not routed:
         itypes = m["interaction_type"] if "interaction_type" in m.columns else pd.Series("other", index=m.index)
         m = m.loc[itypes.isin(INFERABLE_TYPES)]
 
@@ -2629,23 +2748,39 @@ def _build_drug_match_records(
     records = []
     for row in m.itertuples(index=False):
         itype = getattr(row, "interaction_type", "other")
-        inferable = itype in INFERABLE_TYPES
-        ambiguous = not inferable
-
-        # A risk-raising gene (positive estimate) wants a drug that lowers its
-        # activity or expression; a protective one, a drug that raises it.
-        if not inferable or mr_beta == 0:
-            concordant = None
-        elif itype in DOWNREGULATING_TYPES:
-            concordant = bool(mr_beta > 0)
-        else:
-            concordant = bool(mr_beta < 0)
         confidence = getattr(row, "confidence", None)
+        if routed:
+            ev = _route_evidence(row, config, chembl_info)
+            if ev is None:
+                continue
+            status, concordant = _route_match_status(
+                gene_result, ev["drug_direction"], ev["sufficient"], ev["off_site"],
+            )
+            direction = ev["drug_direction"]
+            route = _text_or(getattr(row, "target_route", None), "none")
+            extra = {k: ev[k] for k in ("match_list", "evidence_class", "direction_source")}
+        else:
+            # A risk-raising gene (positive estimate) wants a drug that lowers its
+            # activity or expression; a protective one, a drug that raises it.
+            if itype not in INFERABLE_TYPES or mr_beta == 0:
+                concordant = None
+            elif itype in DOWNREGULATING_TYPES:
+                concordant = bool(mr_beta > 0)
+            else:
+                concordant = bool(mr_beta < 0)
+            status = _match_status(gene_result, concordant, confidence)
+            direction = ("negative" if itype in DOWNREGULATING_TYPES
+                         else "positive" if itype in UPREGULATING_TYPES else "none")
+            route = "none"
+            extra = {"match_list": "main", "evidence_class": "unclassified",
+                     "direction_source": "interaction_type" if direction != "none" else "none"}
+        inferable = direction != "none"
 
         moa = getattr(row, "mechanism_of_action", None)
         # Null-safe: the drug loader emits pd.NA for affinity-only records, and
         # bool(pd.NA) raises TypeError - never take scalar truthiness directly.
         has_moa = _has_text(moa)
+        claims = parse_dgidb_claims(getattr(row, "dgidb_sources", None))
 
         records.append({
             "gene_ensembl_id": gene_result.get("gene_ensembl_id", ""),
@@ -2662,7 +2797,7 @@ def _build_drug_match_records(
             "drug_inchikey": getattr(row, "drug_inchikey", None),
             "interaction_type": itype,
             "direction_concordant": concordant,
-            "interaction_direction_ambiguous": ambiguous,
+            "interaction_direction_ambiguous": not inferable,
             "pchembl_value": getattr(row, "pchembl_value", None),
             "max_phase": getattr(row, "max_phase", 0),
             "atc_codes": getattr(row, "atc_codes", None),
@@ -2674,43 +2809,53 @@ def _build_drug_match_records(
             "drug_target_source": getattr(row, "source", None),
             "drug_target_confidence": confidence,
             "match_via": match_via or None,
-            "match_status": _match_status(gene_result, concordant, confidence),
+            "match_status": status,
+            # --- routes, evidence and lists (records 042 to 044, 047) ---
+            "match_list": extra["match_list"],
+            "target_route": route,
+            "drug_direction": direction,
+            "evidence_class": extra["evidence_class"],
+            "direction_source": extra["direction_source"],
+            "mechanism_action": getattr(row, "mechanism_action", None) if routed else None,
+            "dgidb_sources": "; ".join(f"{s}:{t}" for s, t in claims) if claims else None,
             "locus_colocalised_genes": gene_result.get("locus_colocalised_genes"),
             "drug_match_rank": None,
         })
 
+    if not records:
+        return pd.DataFrame()
     df = pd.DataFrame(records)
 
-    # Within-gene rank (1 = best), by direction_policy; does not reorder rows.
+    # Within-gene rank (1 = best): the main list first, then by direction_policy;
+    # does not reorder rows.
+    df["_list_rank"] = df["match_list"].map(_LIST_RANK)
     sort_by, ascending = _drug_match_rank_keys(config)
-    sort_by = [c for c in sort_by if c in df.columns]
-    if sort_by:
+    keep = [i for i, c in enumerate(sort_by) if c in df.columns]
+    if keep:
         order = df.sort_values(
-            by=sort_by, ascending=ascending[: len(sort_by)],
+            by=[sort_by[i] for i in keep], ascending=[ascending[i] for i in keep],
             kind="mergesort", na_position="last",
         ).index
         rank_lookup = {idx: i + 1 for i, idx in enumerate(order)}
         df["drug_match_rank"] = df.index.map(rank_lookup)
-
-    return df
+    return df.drop(columns=["_list_rank"])
 
 
 def match_drugs_to_mr_gene(
     gene_result: pd.Series,
     drug_targets: pd.DataFrame,
     config: MRDrugMatchConfig | None = None,
+    chembl_info: ChemblDrugInfo | None = None,
 ) -> pd.DataFrame:
     """Match a single MR-significant gene to drugs from DrugTargetRecord.
 
     ``config`` controls the ID-join strategy and phase/potency/direction filters.
-    When ``None`` (default), a default :class:`MRDrugMatchConfig` is used, which
-    reproduces the previous legacy behaviour (exact Ensembl -> loose symbol fallback,
-    no filtering); additive provenance columns are still populated.
+    When ``None`` (default), a default :class:`MRDrugMatchConfig` is used.
     """
     if config is None:
         config = MRDrugMatchConfig()
     raw, via = _resolve_drug_matches_by_id(gene_result, drug_targets, config)
-    return _build_drug_match_records(gene_result, raw, via, config)
+    return _build_drug_match_records(gene_result, raw, via, config, chembl_info)
 
 
 def _summarise_gene_verdict(
@@ -2722,8 +2867,14 @@ def _summarise_gene_verdict(
     """Build one per-gene drug-actionability verdict row.
 
     Emitted for every drug-match-eligible gene, including those with no passing
-    drug, so absence of an actionable drug is a recorded result.
+    drug, so absence of an actionable drug is a recorded result. The verdict
+    reads every list but the second; ``second_list_status`` gives the second
+    list's (record 042).
     """
+    second = pd.DataFrame()
+    if matches is not None and not matches.empty and "match_list" in matches.columns:
+        second = matches.loc[matches["match_list"] == "second"]
+        matches = matches.loc[matches["match_list"] != "second"]
     n_filtered = 0 if matches is None or matches.empty else len(matches)
     if n_filtered and "direction_inferable" in matches.columns:
         n_inferable = int(matches["direction_inferable"].fillna(False).astype(bool).sum())
@@ -2742,6 +2893,8 @@ def _summarise_gene_verdict(
         status = "no_filtered_match"
     else:
         status = next((v for s, v in _VERDICT_BY_STATUS if s in statuses), "binder_only")
+    second_statuses = set(second["match_status"]) if not second.empty else set()
+    second_status = next((v for s, v in _VERDICT_BY_STATUS if s in second_statuses), None)
 
     best = None
     if n_filtered:
@@ -2769,11 +2922,15 @@ def _summarise_gene_verdict(
         "pp_h4": gene_result.get("pp_h4"),
         "confidence_tier": gene_result.get("confidence_tier", "low"),
         "verdict_status": status,
+        "second_list_status": second_status,
         "n_drug_records_raw": int(raw_count),
         "n_filtered_matches": int(n_filtered),
         "n_direction_inferable": n_inferable,
         "n_direction_concordant": n_concordant,
         "n_candidates": int((matches["match_status"] == "candidate").sum()) if has_status else 0,
+        "n_second_list_candidates": (
+            int((second["match_status"] == "candidate").sum()) if not second.empty else 0
+        ),
         "best_max_phase": _best("max_phase"),
         "best_pchembl": _best("pchembl_value"),
         "best_match_via": _best("match_via"),
@@ -2782,6 +2939,158 @@ def _summarise_gene_verdict(
         "druggable_tier": gene_result.get("druggable_tier"),
         "locus_colocalised_genes": gene_result.get("locus_colocalised_genes"),
     }
+
+
+def prepare_drug_table(
+    drug_targets: pd.DataFrame,
+    routes: pd.DataFrame | None,
+    config: MRDrugMatchConfig,
+) -> pd.DataFrame:
+    """The rows Branch C matches: the drug table and, when given, the curated
+    mechanism pairs it lacks (``drug_targets_routes.parquet``, record 042)."""
+    table = drug_targets
+    if routes is not None and not routes.empty and "target_route" in drug_targets.columns:
+        table = pd.concat([drug_targets, routes[[c for c in routes.columns if c in drug_targets.columns]]],
+                          ignore_index=True)
+    elif routes is not None and not routes.empty:
+        logger.warning("Drug table has no route columns; the curated pairs it lacks are not matched")
+    if "target_route" not in table.columns:
+        logger.warning("Drug table predates the route columns (records 042, 045); "
+                       "matches are judged by the 2.0.0 rule")
+    if config.match_mode == "strict" and "gene_ensembl_id" in table.columns:
+        table = table.copy()
+        table["_ens_norm"] = table["gene_ensembl_id"].map(_ensembl_no_version)
+    return table
+
+
+def match_drugs_for_eligible(
+    eligible: pd.DataFrame,
+    drug_targets: pd.DataFrame,
+    config: MRDrugMatchConfig,
+    routes: pd.DataFrame | None = None,
+    chembl_info: ChemblDrugInfo | None = None,
+    return_verdicts: bool = False,
+):
+    """Match every eligible MR row to drugs, as the pipeline does.
+
+    Returns the ``mr_drug_matches`` table (and, with ``return_verdicts``,
+    the per-gene verdicts too), sorted canonically. Re-running it on stored
+    MR rows reproduces a run's matches.
+    """
+    table = prepare_drug_table(drug_targets, routes, config)
+    records: list[pd.DataFrame] = []
+    verdicts: list[dict] = []
+    for idx in eligible.index:
+        gene_row = eligible.loc[idx]
+        raw, via = _resolve_drug_matches_by_id(gene_row, table, config)
+        matches = _build_drug_match_records(gene_row, raw, via, config, chembl_info)
+        if not matches.empty:
+            records.append(matches)
+        verdicts.append(_summarise_gene_verdict(gene_row, len(raw), matches, config))
+    out = pd.concat(records, ignore_index=True) if records else pd.DataFrame()
+    if not out.empty:
+        out = out.sort_values(["eqtl_source", "gene_ensembl_id", "drug_chembl_id"],
+                              kind="mergesort", ignore_index=True)
+    if not return_verdicts:
+        return out
+    v = pd.DataFrame(verdicts) if verdicts else pd.DataFrame()
+    if not v.empty:
+        v = v.sort_values(["eqtl_source", "gene_ensembl_id"], kind="mergesort", ignore_index=True)
+    return out, v
+
+
+def summarise_drug_compounds(matches: pd.DataFrame) -> pd.DataFrame:
+    """One row per drug and list across its eligible genes (record 046).
+
+    ``compound_summary``: ``beneficial`` (candidate calls only),
+    ``adverse`` (predicted-adverse calls only), ``mixed`` (both) or
+    ``undirected`` (neither).
+    """
+    cols = ["drug_chembl_id", "drug_name", "match_list", "n_genes", "genes",
+            "n_candidate", "n_predicted_adverse", "compound_summary"]
+    if matches is None or matches.empty or "match_list" not in matches.columns:
+        return pd.DataFrame(columns=cols)
+    m = matches.loc[matches["match_list"].isin(["main", "second"])]
+    rows = []
+    for (drug, lst), g in m.groupby(["drug_chembl_id", "match_list"], sort=True):
+        cand = int((g["match_status"] == "candidate").sum())
+        adv = int((g["match_status"] == "predicted_adverse").sum())
+        summary = ("mixed" if cand and adv else "beneficial" if cand else
+                   "adverse" if adv else "undirected")
+        genes = sorted(set(g["gene_symbol"].astype(str) + " (" + g["eqtl_source"].astype(str) + ")"))
+        rows.append({"drug_chembl_id": drug, "drug_name": str(g["drug_name"].iloc[0]),
+                     "match_list": lst, "n_genes": g["gene_ensembl_id"].nunique(),
+                     "genes": "; ".join(genes), "n_candidate": cand,
+                     "n_predicted_adverse": adv, "compound_summary": summary})
+    return pd.DataFrame(rows, columns=cols)
+
+
+CALIBRATION_SEED = 20261027
+CALIBRATION_PERMUTATIONS = 10_000
+
+
+def _instrument_bins(n: pd.Series) -> pd.Series:
+    return pd.cut(pd.to_numeric(n, errors="coerce").fillna(1), [0, 1, 2, 5, np.inf],
+                  labels=["1", "2", "3-5", "6+"], right=True)
+
+
+def drug_layer_calibration(
+    mr_results: pd.DataFrame,
+    eligible: pd.DataFrame,
+    table: pd.DataFrame,
+    matches: pd.DataFrame,
+    min_phase: int | None = 1,
+    seed: int = CALIBRATION_SEED,
+    n_perm: int = CALIBRATION_PERMUTATIONS,
+) -> dict:
+    """Record 048's reported statistics (a) and (b); (c) is computed in the audit.
+
+    (a) Per eQTL source, the share of eligible genes a drug of max_phase >=
+    ``min_phase`` reaches by a main-list route, against random sets of the
+    source's tested genes with the same counts in instrument bins (1, 2, 3 to
+    5, 6 or more); one-sided P = (1 + draws at least as extreme) / (n + 1).
+    (b) Main-list directed calls by distinct drug-gene pair, candidate
+    against predicted adverse, with a two-sided binomial P against one half.
+    """
+    out: dict = {"seed": seed, "n_permutations": n_perm, "drugged_share": [], "directed_calls": {}}
+    if "target_route" in table.columns:
+        t = table.loc[table["target_route"].isin(MAIN_LIST_ROUTES)]
+        if min_phase is not None:
+            t = t.loc[pd.to_numeric(t["max_phase"], errors="coerce").fillna(0) >= min_phase]
+        drugged = set(t["gene_ensembl_id"].map(_ensembl_no_version))
+        rng = np.random.default_rng(seed)
+        finite = mr_results.loc[np.isfinite(pd.to_numeric(mr_results["mr_pval"], errors="coerce"))]
+        for src, tested in finite.groupby("eqtl_source", sort=True):
+            tested = tested.assign(_ens=tested["gene_ensembl_id"].map(_ensembl_no_version),
+                                   _bin=_instrument_bins(tested.get("n_instruments", pd.Series(1, index=tested.index))))
+            e_ids = set(eligible.loc[eligible["eqtl_source"] == src, "gene_ensembl_id"])
+            e = tested.loc[tested["gene_ensembl_id"].isin(e_ids)]
+            if e.empty:
+                continue
+            obs = float(e["_ens"].isin(drugged).mean())
+            null = np.zeros(n_perm)
+            for b, k in e["_bin"].value_counts().items():
+                if k == 0:
+                    continue
+                pool = tested.loc[tested["_bin"] == b, "_ens"].isin(drugged).to_numpy()
+                null += np.array([rng.choice(pool, size=k, replace=False).sum() for _ in range(n_perm)])
+            null /= len(e)
+            out["drugged_share"].append({
+                "eqtl_source": str(src), "n_eligible": int(len(e)), "share": obs,
+                "null_mean": float(null.mean()),
+                "p_one_sided": (1 + int((null >= obs).sum())) / (n_perm + 1),
+            })
+    if matches is not None and not matches.empty and "match_list" in matches.columns:
+        main = matches.loc[matches["match_list"] == "main"].drop_duplicates(
+            ["drug_chembl_id", "gene_ensembl_id", "match_status"])
+        c = int((main["match_status"] == "candidate").sum())
+        a = int((main["match_status"] == "predicted_adverse").sum())
+        out["directed_calls"] = {
+            "candidate_pairs": c, "predicted_adverse_pairs": a,
+            "binomial_p_two_sided": (float(scipy.stats.binomtest(c, c + a, 0.5).pvalue)
+                                     if c + a else None),
+        }
+    return out
 
 
 def _bh_fdr_finite(pvals: pd.Series) -> pd.Series:
@@ -3478,6 +3787,8 @@ def run_mendelian_randomisation(
     reference_config: ReferenceConfig,
     output_dir: Path,
     n_workers_cap: int | None = None,
+    drug_target_routes_path: Path | None = None,
+    chembl_sqlite_path: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run cis-MR pipeline across all configured eQTL sources.
 
@@ -3492,6 +3803,14 @@ def run_mendelian_randomisation(
     n_workers_cap : int | None
         Optional ceiling on effective workers (e.g., from Snakemake --threads).
         Effective workers = min(config.n_workers, n_workers_cap, cpu_count, n_tasks).
+    drug_target_routes_path : Path | None
+        Curated ChEMBL mechanism pairs the drug table lacks
+        (``drug_targets_routes.parquet``, record 042), matched beside it.
+    chembl_sqlite_path : Path | None
+        ChEMBL database for the drug layer's phases, target families and
+        binder directions (records 042 to 044). Without it, DGIdb target
+        claims cannot carry a candidate and every binder takes the
+        "other" potency floor.
 
     Returns (mr_results_df, mr_drug_matches_df).
     """
@@ -3930,13 +4249,16 @@ def run_mendelian_randomisation(
     # --- Phase 4: Drug matching (deferred load) ---
     logger.info("Loading drug targets from %s", drug_targets_path)
     drug_targets = pd.read_parquet(drug_targets_path)
-    # Precompute version-stripped Ensembl once for the strict-mode ID hierarchy.
-    if dm_config.match_mode == "strict" and "gene_ensembl_id" in drug_targets.columns:
-        drug_targets = drug_targets.copy()
-        drug_targets["_ens_norm"] = drug_targets["gene_ensembl_id"].map(_ensembl_no_version)
-
-    drug_match_records: list[pd.DataFrame] = []
-    verdict_rows: list[dict] = []
+    routes = None
+    if drug_target_routes_path is not None:
+        routes = pd.read_parquet(drug_target_routes_path)
+        logger.info("Curated mechanism pairs the table lacks: %d", len(routes))
+    chembl_info = None
+    if chembl_sqlite_path is not None:
+        chembl_info = load_chembl_drug_info(chembl_sqlite_path, dm_config.binder_direction_classes)
+    else:
+        logger.warning("No ChEMBL database for the drug layer: DGIdb target claims cannot "
+                       "carry a candidate and binders take the 'other' potency floor")
 
     eligible = mr_results.loc[
         mr_results["mr_significant"]
@@ -3950,19 +4272,16 @@ def run_mendelian_randomisation(
     if config.require_steiger:
         eligible = eligible.loc[eligible.get("steiger_valid", True) == True]  # noqa: E712
 
-    for idx in eligible.index:
-        gene_row = eligible.loc[idx]
-        raw, via = _resolve_drug_matches_by_id(gene_row, drug_targets, dm_config)
-        matches = _build_drug_match_records(gene_row, raw, via, dm_config)
-        if not matches.empty:
-            drug_match_records.append(matches)
-        # One verdict per eligible gene, incl. genes with no passing drug.
-        verdict_rows.append(
-            _summarise_gene_verdict(gene_row, len(raw), matches, dm_config)
-        )
-
-    mr_drug_matches = pd.concat(drug_match_records, ignore_index=True) if drug_match_records else pd.DataFrame()
-    mr_target_verdicts = pd.DataFrame(verdict_rows) if verdict_rows else pd.DataFrame()
+    mr_drug_matches, mr_target_verdicts = match_drugs_for_eligible(
+        eligible, drug_targets, dm_config, routes=routes, chembl_info=chembl_info,
+        return_verdicts=True,
+    )
+    drug_table = prepare_drug_table(drug_targets, routes, dm_config)
+    mr_drug_compounds = summarise_drug_compounds(mr_drug_matches)
+    drug_calibration = drug_layer_calibration(
+        mr_results, eligible, drug_table, mr_drug_matches, min_phase=dm_config.min_phase,
+    )
+    del drug_table
 
     # Canonical sort for deterministic output regardless of scheduling order
     mr_results.sort_values(
@@ -3989,6 +4308,10 @@ def run_mendelian_randomisation(
     mr_results.to_parquet(output_dir / "mr_results.parquet", engine="pyarrow", index=False)
     _write_csv_with_json_lists(mr_results, output_dir / "mr_results.csv")
     _write_drug_matches(output_dir, mr_drug_matches)
+    mr_drug_compounds.to_parquet(output_dir / "mr_drug_compounds.parquet", engine="pyarrow", index=False)
+    mr_drug_compounds.to_csv(output_dir / "mr_drug_compounds.csv", index=False)
+    with open(output_dir / "mr_drug_calibration.json", "w") as f:
+        json.dump(drug_calibration, f, indent=2)
 
     # Per-gene target verdicts - always written (empty frame if none eligible).
     if not mr_target_verdicts.empty:
@@ -4076,7 +4399,17 @@ def run_mendelian_randomisation(
                 str(dm_config.druggable_genome_path)
                 if dm_config.druggable_genome_path is not None else None
             ),
+            "binder_floor": dm_config.binder_floor,
+            "binder_direction_classes": list(dm_config.binder_direction_classes),
         },
+        "drug_target_routes_path": (
+            str(drug_target_routes_path) if drug_target_routes_path is not None else None
+        ),
+        "chembl_sqlite_path": str(chembl_sqlite_path) if chembl_sqlite_path is not None else None,
+        "match_list_counts": (
+            {str(k): int(v) for k, v in mr_drug_matches["match_list"].value_counts().items()}
+            if "match_list" in mr_drug_matches.columns else {}
+        ),
         "instrument_pval": config.instrument_pval,
         "clump_r2": config.clump_r2,
         "f_stat_threshold": config.f_stat_threshold,
@@ -4148,6 +4481,14 @@ if __name__ == "__main__":
         help="Path to GWAS metadata JSON sidecar. Default: <gwas_stem>.meta.json",
     )
     parser.add_argument("--drug-targets", type=Path, required=True)
+    parser.add_argument(
+        "--drug-target-routes", type=Path, default=None,
+        help="Curated ChEMBL mechanism pairs the drug table lacks (drug_targets_routes.parquet).",
+    )
+    parser.add_argument(
+        "--chembl-sqlite", type=Path, default=None,
+        help="ChEMBL SQLite database for the drug layer's phases, target families and binder directions.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--threads", type=int, default=None,
@@ -4191,4 +4532,6 @@ if __name__ == "__main__":
         reference_config=pipeline_config.reference,
         output_dir=args.output_dir,
         n_workers_cap=args.threads,
+        drug_target_routes_path=args.drug_target_routes,
+        chembl_sqlite_path=args.chembl_sqlite,
     )

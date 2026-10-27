@@ -701,7 +701,9 @@ def _build_summary_sheet(combined: CombinedResults) -> pd.DataFrame:
             })
 
     if combined.mr_drug_matches is not None:
-        mr = combined.mr_drug_matches
+        from repogen.reporting.combine_results import primary_mr_matches
+
+        mr = primary_mr_matches(combined.mr_drug_matches)
         for row in mr.itertuples(index=False):
             name = getattr(row, "drug_name", None)
             chembl = getattr(row, "drug_chembl_id", None)
