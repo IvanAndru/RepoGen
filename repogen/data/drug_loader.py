@@ -2277,8 +2277,9 @@ def _attach_dgidb_sources(result: pd.DataFrame, claims: pd.DataFrame) -> pd.Data
                       "claim": labels.values})
         .groupby(["drug_chembl_id", "gene_symbol"])["claim"]
         .apply(lambda s: sorted(set(s)))
+        .to_dict()
     )
-    keys = list(zip(out["drug_chembl_id"].astype(str), out["gene_symbol"].astype(str)))
+    keys = zip(out["drug_chembl_id"].astype(str), out["gene_symbol"].astype(str))
     out["dgidb_sources"] = [by_pair.get(k) for k in keys]
     return out
 
