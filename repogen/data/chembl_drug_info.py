@@ -108,21 +108,39 @@ JOIN component_class cc ON cc.component_id = cs.component_id
 WHERE cs.component_type = 'PROTEIN' AND cs.accession IS NOT NULL
 """
 _Q_TREE = "SELECT protein_class_id, parent_id, pref_name FROM protein_classification"
-_Q_ACTIVITY_PAIRS = """\
-SELECT COALESCE(p.chembl_id, md.chembl_id) AS parent_id, cs.accession AS uniprot,
-       act.action_type, act.standard_type, act.pchembl_value, a.assay_type
-FROM activities act
-JOIN molecule_dictionary md ON md.molregno = act.molregno
-LEFT JOIN molecule_hierarchy mh ON mh.molregno = md.molregno
-LEFT JOIN molecule_dictionary p ON p.molregno = mh.parent_molregno
-JOIN assays a ON a.assay_id = act.assay_id
+_Q_ACTIVITIES = """SELECT molregno, assay_id, action_type, standard_type, pchembl_value
+FROM activities
+WHERE data_validity_comment IS NULL AND {where}
+"""
+_Q_SINGLE_PROTEIN_ASSAYS = """SELECT a.assay_id, a.assay_type, cs.accession AS uniprot
+FROM assays a
 JOIN target_dictionary td ON td.tid = a.tid
 JOIN target_components tc ON tc.tid = td.tid
 JOIN component_sequences cs ON cs.component_id = tc.component_id
 WHERE td.target_type = 'SINGLE PROTEIN' AND td.organism = 'Homo sapiens'
-  AND act.data_validity_comment IS NULL
-  AND {where}
 """
+_Q_PARENTS = """SELECT md.molregno, COALESCE(p.chembl_id, md.chembl_id) AS parent_id
+FROM molecule_dictionary md
+LEFT JOIN molecule_hierarchy mh ON mh.molregno = md.molregno
+LEFT JOIN molecule_dictionary p ON p.molregno = mh.parent_molregno
+"""
+
+
+def _activity_pairs(conn: sqlite3.Connection, where: str, assay_type: Optional[str] = None) -> pd.DataFrame:
+    """Valid activities matching ``where`` (activities columns only) on human
+    single-protein assays, with the parent drug and the target's UniProt.
+
+    The filter runs in SQLite on the activities table alone and the joins in
+    pandas: joined inside SQLite, the three queries ran for more than 30
+    minutes on ChEMBL 35 without finishing.
+    """
+    act = pd.read_sql_query(_Q_ACTIVITIES.format(where=where), conn)
+    assays = pd.read_sql_query(_Q_SINGLE_PROTEIN_ASSAYS, conn)
+    if assay_type is not None:
+        assays = assays.loc[assays["assay_type"] == assay_type]
+    act = act.merge(assays, on="assay_id")
+    parents = pd.read_sql_query(_Q_PARENTS, conn)
+    return act.merge(parents, on="molregno")
 
 
 def protein_families(conn: sqlite3.Connection) -> tuple[dict[str, str], set[str]]:
@@ -171,7 +189,7 @@ def curated_activity_directions(conn: sqlite3.Connection,
                                 action_classes: dict[str, str]) -> pd.DataFrame:
     """Record 043, class ``curated_activity``: ChEMBL's curated action types
     on individual activities; one direction per pair, none if they disagree."""
-    act = pd.read_sql_query(_Q_ACTIVITY_PAIRS.format(where="act.action_type IS NOT NULL"), conn)
+    act = _activity_pairs(conn, "action_type IS NOT NULL")
     act["direction"] = act["action_type"].map(
         lambda a: _CLASS_DIRECTION.get(action_classes.get(str(a)), "none"))
     agg = act.groupby(["parent_id", "uniprot"])["direction"].apply(_one_direction)
@@ -182,9 +200,8 @@ def inferred_enzyme_calls(conn: sqlite3.Connection, family: dict[str, str],
                           enzymes: set[str]) -> pd.DataFrame:
     """Record 043, class ``inferred_enzyme``: an inhibitor call for an
     enzyme with a functional IC50 or Ki at or above its family floor."""
-    act = pd.read_sql_query(_Q_ACTIVITY_PAIRS.format(
-        where="a.assay_type = 'F' AND act.standard_type IN ('IC50', 'Ki') "
-              "AND act.pchembl_value IS NOT NULL"), conn)
+    act = _activity_pairs(conn, "standard_type IN ('IC50', 'Ki') AND pchembl_value IS NOT NULL",
+                          assay_type="F")
     act = act.loc[act["uniprot"].isin(enzymes)]
     best = act.groupby(["parent_id", "uniprot"])["pchembl_value"].max().reset_index()
     floor = best["uniprot"].map(lambda u: FAMILY_FLOORS[family.get(u, "other")])
@@ -195,9 +212,8 @@ def inferred_enzyme_calls(conn: sqlite3.Connection, family: dict[str, str],
 def inferred_kinase_binding_calls(conn: sqlite3.Connection, family: dict[str, str]) -> pd.DataFrame:
     """Record 043, class ``inferred_kinase_binding``: a kinase binding-panel
     Kd at pKd >= 7.5 read as inhibition."""
-    act = pd.read_sql_query(_Q_ACTIVITY_PAIRS.format(
-        where="a.assay_type = 'B' AND act.standard_type = 'Kd' "
-              "AND act.pchembl_value IS NOT NULL"), conn)
+    act = _activity_pairs(conn, "standard_type = 'Kd' AND pchembl_value IS NOT NULL",
+                          assay_type="B")
     act = act.loc[act["uniprot"].map(lambda u: family.get(u) == "kinase")]
     best = act.groupby(["parent_id", "uniprot"])["pchembl_value"].max().reset_index()
     best = best.loc[best["pchembl_value"] >= FAMILY_FLOORS["kinase"]]
