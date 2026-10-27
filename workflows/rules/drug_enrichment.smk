@@ -109,6 +109,9 @@ rule load_drug_targets:
         chembl=f"{DRUGS_RES_DIR}/chembl_35.db",
     output:
         parquet=f"{DRUG_DIR}/drug_targets.parquet",
+        # Curated ChEMBL mechanism pairs the table lacks (record 042);
+        # read by Branch C only.
+        routes=f"{DRUG_DIR}/drug_targets_routes.parquet",
     params:
         biomart_dir=(
             str(Path(config["reference"]["ensembl_to_name"]).parent)
@@ -150,6 +153,7 @@ rule load_drug_targets:
         python -m repogen.data.drug_loader \
             --chembl-sqlite {input.chembl} \
             --output {output.parquet} \
+            --routes-output {output.routes} \
             --biomart-dir {params.biomart_dir} \
             {params.gene_info_flag} \
             {params.gene_history_flag} \

@@ -441,6 +441,67 @@ class TestMergeSources:
         assert result.empty
 
 
+class TestDgidbSources:
+    """The ``dgidb_sources`` column is additive (record 044)."""
+
+    @staticmethod
+    def _inputs(with_claims: bool) -> dict[str, pd.DataFrame]:
+        # ChEMBL and DGIdb rows of one pair fill the same number of fields,
+        # so any extra field on the DGIdb row would decide de-duplication.
+        chembl = pd.DataFrame({
+            "drug_name": ["Drug A", "Drug A"],
+            "drug_chembl_id": ["CHEMBL1", "CHEMBL1"],
+            "gene_symbol": ["HTR2A", "DRD2"],
+            "interaction_type": ["antagonist", "antagonist"],
+            "max_phase": [4, 4],
+            "source": ["chembl", "chembl"],
+            "confidence": ["high", "high"],
+        })
+        dgidb = pd.DataFrame({
+            "drug_name": ["Drug A", "Drug A", "Drug A"],
+            "drug_chembl_id": ["CHEMBL1", "CHEMBL1", "CHEMBL1"],
+            "gene_symbol": ["HTR2A", "HTR2A", "HRH1"],
+            "interaction_type": ["inhibitor", "other", "antagonist"],
+            "max_phase": [0, 0, 0],
+            "source": ["dgidb", "dgidb", "dgidb"],
+            "confidence": ["low", "low", "medium"],
+        })
+        if with_claims:
+            dgidb["_dgidb_source"] = ["ChEMBL", "PharmGKB", "GuideToPharmacology"]
+            dgidb["_dgidb_raw_type"] = ["inhibitor", "", "Antagonist"]
+        return {"chembl": chembl, "dgidb": dgidb}
+
+    def test_other_columns_unchanged(self) -> None:
+        old = merge_sources(self._inputs(with_claims=False))
+        new = merge_sources(self._inputs(with_claims=True), annotate_dgidb_sources=True)
+        assert list(new.columns) == list(old.columns) + ["dgidb_sources"]
+        pd.testing.assert_frame_equal(new[old.columns], old)
+
+    def test_claims_attached_per_pair(self) -> None:
+        new = merge_sources(self._inputs(with_claims=True), annotate_dgidb_sources=True)
+        by_gene = dict(zip(new["gene_symbol"], new["dgidb_sources"]))
+        assert by_gene["HTR2A"] == ["ChEMBL:inhibitor", "PharmGKB:"]
+        assert by_gene["HRH1"] == ["GuideToPharmacology:antagonist"]
+        assert by_gene["DRD2"] is None
+
+    def test_without_flag_no_column_and_no_leak(self) -> None:
+        out = merge_sources(self._inputs(with_claims=True))
+        assert "dgidb_sources" not in out.columns
+        assert not any(c.startswith("_dgidb") for c in out.columns)
+        pd.testing.assert_frame_equal(out, merge_sources(self._inputs(with_claims=False)))
+
+    def test_load_dgidb_carries_source_and_raw_type(self, tmp_path: Path) -> None:
+        tsv_path = tmp_path / "dgidb.tsv"
+        tsv_path.write_text(
+            "drug_name\tgene_name\tinteraction_types\tinteraction_source_db_name\n"
+            "Clozapine\tHTR2A\tantagonist\tGuideToPharmacology\n"
+            "Clozapine\tDRD2\t\tPharmGKB\n"
+        )
+        result = load_dgidb(interactions_tsv=tsv_path)
+        assert list(result["_dgidb_source"]) == ["GuideToPharmacology", "PharmGKB"]
+        assert list(result["_dgidb_raw_type"]) == ["antagonist", ""]
+
+
 class TestLoadPdsp:
     """Tests for PDSP Ki loading."""
 

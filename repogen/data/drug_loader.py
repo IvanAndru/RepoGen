@@ -239,6 +239,7 @@ def load_drug_targets(
     expression_sources: Optional[list[str]] = None,
     creeds_path: Optional[Path] = None,
     dsigdb_path: Optional[Path] = None,
+    annotate_dgidb_sources: bool = False,
 ) -> pd.DataFrame:
     """Load and integrate drug-target interactions from multiple sources.
 
@@ -269,6 +270,8 @@ def load_drug_targets(
             (required iff ``"creeds" in expression_sources``).
         dsigdb_path: Path to the DSigDB D3 file (required iff
             ``"dsigdb" in expression_sources``).
+        annotate_dgidb_sources: Add the ``dgidb_sources`` column (see
+            :func:`merge_sources`); no other column changes.
 
     Returns:
         Unified :class:`DrugTargetRecord` DataFrame.
@@ -403,6 +406,7 @@ def load_drug_targets(
         gene_id_converter=gene_id_converter,
         chembl_name_index=chembl_name_index,
         parent_salt_unification=parent_salt_unification,
+        annotate_dgidb_sources=annotate_dgidb_sources,
     )
 
     if result.empty:
@@ -1722,6 +1726,19 @@ def load_dgidb(
     else:
         df["_drug_claim_name"] = ""
 
+    # Each claim's source database and raw interaction type, also as
+    # transient columns: merge_sources takes them off before
+    # de-duplication, so they never change which row a pair keeps, and
+    # can attach them as ``dgidb_sources`` (record 044).
+    if source_col and source_col in df.columns:
+        df["_dgidb_source"] = df[source_col].fillna("").astype(str).str.strip()
+    else:
+        df["_dgidb_source"] = ""
+    if itype_col and itype_col in df.columns:
+        df["_dgidb_raw_type"] = df[itype_col].fillna("").astype(str).str.strip()
+    else:
+        df["_dgidb_raw_type"] = ""
+
     itype_series = df[itype_col].astype(str) if itype_col and itype_col in df.columns else pd.Series("", index=df.index)
     std_itypes = itype_series.apply(_standardize_interaction_type)
 
@@ -1759,6 +1776,8 @@ def load_dgidb(
         "confidence": np.where(has_pmids, "medium", "low"),
         "source_pmids": pmid_lists.values,
         "_drug_claim_name": df["_drug_claim_name"].values,
+        "_dgidb_source": df["_dgidb_source"].values,
+        "_dgidb_raw_type": df["_dgidb_raw_type"].values,
     })
 
     if gene_id_converter is not None and not result.empty:
@@ -1783,7 +1802,8 @@ def _detect_dgidb_columns(df: pd.DataFrame) -> Optional[dict[str, str]]:
                         "interaction_claim_source"]
     pmid_candidates = ["pmids", "pmid", "pubmed_ids"]
     chembl_candidates = ["drug_chembl_id", "drug_concept_id", "drug concept id", "concept_id"]
-    source_candidates = ["source_db_name", "source", "interaction_group_score"]
+    source_candidates = ["interaction_source_db_name", "source_db_name", "source",
+                         "interaction_group_score"]
 
     drug_col = _first_match(cols_lower, drug_candidates)
     # If the canonical drug-name column is missing, fall back to the
@@ -2091,6 +2111,7 @@ def merge_sources(
     gene_id_converter: Optional[GeneIDConverter] = None,
     chembl_name_index: Optional[ChemblNameIndex] = None,
     parent_salt_unification: bool = True,
+    annotate_dgidb_sources: bool = False,
 ) -> pd.DataFrame:
     """Merge drug-target records from multiple sources.
 
@@ -2120,6 +2141,13 @@ def merge_sources(
             step collapses parent + salt rows of the same compound
             into a single entity.  Set ``False`` to disable as a
             rollback / debugging escape hatch. See.
+        annotate_dgidb_sources: When ``True``, add a ``dgidb_sources``
+            column after the schema is finalised: for each drug-gene
+            pair, the sorted list of its DGIdb claims as
+            ``"<source database>:<raw interaction type>"`` (record 044).
+            The claims are taken off the DGIdb rows before
+            de-duplication, so every other column is the same as with
+            ``False``.
 
     Returns:
         Unified DataFrame conforming to DrugTargetRecord schema.
@@ -2149,6 +2177,13 @@ def merge_sources(
         # Even without an index, strip the transient column so it
         # never reaches the merged DataFrame.
         dgidb_df = dgidb_df.drop(columns=["_drug_claim_name"])
+
+    # DGIdb claims (source database, raw type) leave the rows here, after
+    # the IDs are resolved and before de-duplication ranks rows by how
+    # many fields they fill.
+    dgidb_claims = pd.DataFrame()
+    if not dgidb_df.empty:
+        dgidb_df, dgidb_claims = _take_dgidb_claims(dgidb_df)
 
     # Same name-based placeholder->CHEMBL upgrade as
     # DGIdb, but driven by the simpler matcher (no _drug_claim_name
@@ -2182,6 +2217,10 @@ def merge_sources(
         combined = _canonicalize_to_parent_chembl_id(
             combined, chembl_name_index,
         )
+        if not dgidb_claims.empty:
+            pmap = chembl_name_index.parent_chembl_id_of_cid
+            cids = dgidb_claims["drug_chembl_id"].astype(object).astype(str)
+            dgidb_claims["drug_chembl_id"] = cids.map(pmap).fillna(cids).values
 
     combined = _deduplicate_records(combined)
 
@@ -2195,7 +2234,53 @@ def merge_sources(
             combined, chembl_name_index, loaded_chembl_ids=loaded_ids,
         )
 
-    return _finalize_schema(combined)
+    result = _finalize_schema(combined)
+    if annotate_dgidb_sources:
+        result = _attach_dgidb_sources(result, dgidb_claims)
+    return result
+
+
+_DGIDB_CLAIM_COLS = ("_dgidb_source", "_dgidb_raw_type")
+
+
+def _take_dgidb_claims(dgidb_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split the transient claim columns off the DGIdb rows.
+
+    Returns the rows without them and a claims table keyed like the
+    rows (``drug_chembl_id``, ``gene_symbol``) with ``dgidb_source`` and
+    ``dgidb_raw_type``.  Rows from a loader that did not add the columns
+    give an empty claims table.
+    """
+    present = [c for c in _DGIDB_CLAIM_COLS if c in dgidb_df.columns]
+    if len(present) < len(_DGIDB_CLAIM_COLS):
+        return dgidb_df.drop(columns=present), pd.DataFrame()
+    claims = pd.DataFrame({
+        "drug_chembl_id": dgidb_df["drug_chembl_id"].values,
+        "gene_symbol": dgidb_df["gene_symbol"].values,
+        "dgidb_source": dgidb_df["_dgidb_source"].values,
+        "dgidb_raw_type": dgidb_df["_dgidb_raw_type"].values,
+    })
+    return dgidb_df.drop(columns=list(_DGIDB_CLAIM_COLS)), claims
+
+
+def _attach_dgidb_sources(result: pd.DataFrame, claims: pd.DataFrame) -> pd.DataFrame:
+    """Add ``dgidb_sources``: each pair's DGIdb claims as ``"source:type"``."""
+    out = result.copy()
+    out["dgidb_sources"] = None
+    if out.empty or claims.empty:
+        return out
+    c = claims.dropna(subset=["drug_chembl_id", "gene_symbol"])
+    labels = c["dgidb_source"].astype(str) + ":" + c["dgidb_raw_type"].astype(str).str.lower()
+    by_pair = (
+        pd.DataFrame({"drug_chembl_id": c["drug_chembl_id"].astype(str),
+                      "gene_symbol": c["gene_symbol"].astype(str),
+                      "claim": labels.values})
+        .groupby(["drug_chembl_id", "gene_symbol"])["claim"]
+        .apply(lambda s: sorted(set(s)))
+    )
+    keys = list(zip(out["drug_chembl_id"].astype(str), out["gene_symbol"].astype(str)))
+    out["dgidb_sources"] = [by_pair.get(k) for k in keys]
+    return out
 
 
 def _match_pdsp_to_chembl(
@@ -2786,6 +2871,13 @@ if __name__ == "__main__":
             "'dsigdb' is in --expression-sources."
         ),
     )
+    parser.add_argument(
+        "--routes-output", type=Path, default=None,
+        help=(
+            "Where to write the curated ChEMBL mechanism pairs that the "
+            "drug table lacks (record 042), read by Branch C only."
+        ),
+    )
     args = parser.parse_args()
 
     sources = ["chembl"]
@@ -2827,9 +2919,36 @@ if __name__ == "__main__":
         expression_sources=expression_sources,
         creeds_path=args.creeds_path,
         dsigdb_path=args.dsigdb_path,
+        annotate_dgidb_sources=True,
     )
+
+    # Route, curated action and direction of each pair (records 042, 045,
+    # 047), added as new columns; Branch A and B do not read them.
+    from repogen.data.drug_mechanisms import (
+        annotate_with_mechanisms,
+        load_curated_mechanism_pairs,
+        mechanism_rows_missing_from,
+    )
+
+    mechanism_pairs = load_curated_mechanism_pairs(args.chembl_sqlite, converter)
+    result_df = annotate_with_mechanisms(result_df, mechanism_pairs)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_parquet(output_path, engine="pyarrow", index=False)
     logger.info("Saved %d records to %s", len(result_df), output_path)
+
+    if args.routes_output is not None:
+        routes_df = mechanism_rows_missing_from(result_df, mechanism_pairs)
+        routes_path = Path(args.routes_output)
+        routes_path.parent.mkdir(parents=True, exist_ok=True)
+        routes_df.attrs["provenance"] = {
+            "chembl_sqlite": str(args.chembl_sqlite),
+            "drug_table": str(output_path),
+            "drug_table_rows": int(len(result_df)),
+            "curated_pairs": int(len(mechanism_pairs)),
+            "pairs_missing_from_table": int(len(routes_df)),
+        }
+        routes_df.to_parquet(routes_path, engine="pyarrow", index=False)
+        logger.info("Saved %d curated mechanism pairs missing from the table to %s",
+                    len(routes_df), routes_path)

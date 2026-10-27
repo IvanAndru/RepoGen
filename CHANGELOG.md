@@ -6,6 +6,22 @@ All notable changes to RepoGen are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The drug table, `drug_targets.parquet`, gains four columns for Branch C's
+  drug layer; no existing value changes, and Branches A and B do not read
+  them. `dgidb_sources` lists each pair's DGIdb claims as
+  `source:interaction type`. `target_route` says how a curated ChEMBL
+  mechanism reaches the gene: a single protein, a nucleic-acid target with
+  one gene, a subunit of a complex's curated binding site, a member of a
+  complex or family, a complex member outside the binding site, or none.
+  `mechanism_action` and `mechanism_direction` give the curated action
+  types and their direction in ChEMBL's own classification, taken from the
+  parent compound, so a direction curated on a salt is no longer lost.
+- `drug_targets_routes.parquet`, written beside the table, holds the
+  curated mechanism pairs the table lacks (members of complexes and
+  families, nucleic-acid targets) for Branch C.
+
 ## [2.0.0] - 2026-09-28
 
 Branch C, the Mendelian randomisation branch, is revised throughout:

@@ -122,6 +122,12 @@ class DrugTargetRecordRow(BaseModel):
     source: str
     confidence: str
     source_pmids: Optional[list[str]] = None
+    # Written by the drug-loader CLI (records 042, 044, 045, 047); Branch C
+    # reads them, Branches A and B do not.
+    dgidb_sources: Optional[list[str]] = None
+    target_route: Optional[str] = None
+    mechanism_action: Optional[str] = None
+    mechanism_direction: Optional[str] = None
 
 
 DRUG_TARGET_REQUIRED: dict[str, type] = {
