@@ -246,6 +246,22 @@ def combine_results(
     return combined
 
 
+def primary_mr_matches(mr_drug_matches: pd.DataFrame) -> pd.DataFrame:
+    """Branch C matches outside the second list and without ``off_site`` status.
+
+    Calls through members of complexes and families, and directed binders,
+    form a second list that joins the main one only by the audit's written
+    rule (record 042); cross-branch counts and the summary plot leave them
+    out. A table without ``match_list`` is returned unchanged.
+    """
+    if mr_drug_matches is None or mr_drug_matches.empty or "match_list" not in mr_drug_matches.columns:
+        return mr_drug_matches.copy() if mr_drug_matches is not None else pd.DataFrame()
+    keep = mr_drug_matches["match_list"] != "second"
+    if "match_status" in mr_drug_matches.columns:
+        keep &= mr_drug_matches["match_status"] != "off_site"
+    return mr_drug_matches.loc[keep].copy()
+
+
 def _compute_drug_overlap(
     drug_enrichment: pd.DataFrame | None,
     neg_correlation_summary: pd.DataFrame | None,
@@ -292,7 +308,7 @@ def _compute_drug_overlap(
             branch_dfs.append(("neg_corr", sig[avail].copy()))
 
     if mr_drug_matches is not None:
-        mr = mr_drug_matches.copy()
+        mr = primary_mr_matches(mr_drug_matches)
         if not mr.empty:
             cols = ["drug_name", "drug_chembl_id", "confidence_tier"]
             avail = [c for c in cols if c in mr.columns]

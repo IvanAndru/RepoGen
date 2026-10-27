@@ -741,10 +741,20 @@ class MRDrugMatchRow(BaseModel):
     drug_target_source: Optional[str] = None
     drug_target_confidence: Optional[str] = None
     match_via: Optional[str] = None
-    # candidate | predicted_adverse | binder | low_evidence | mhc_region |
-    # steiger_invalid: only candidates oppose the genetic risk on cited or
-    # curated evidence, outside the MHC.
+    # candidate | predicted_adverse | binder | low_evidence | off_site |
+    # mhc_region | steiger_invalid: only candidates oppose the genetic risk
+    # on evidence that may carry a call, outside the MHC.
     match_status: Optional[str] = None
+    # Records 042 to 044 and 047: main | binder | second | listed; how a
+    # curated mechanism reaches the gene; the direction the layer assigned;
+    # the evidence behind the match and where its direction came from.
+    match_list: Optional[str] = None
+    target_route: Optional[str] = None
+    drug_direction: Optional[str] = None
+    evidence_class: Optional[str] = None
+    direction_source: Optional[str] = None
+    mechanism_action: Optional[str] = None
+    dgidb_sources: Optional[str] = None
     # Other colocalised genes whose lead SNP is this gene's or in LD with it.
     locus_colocalised_genes: Optional[str] = None
     drug_match_rank: Optional[int] = None
@@ -780,6 +790,13 @@ MR_DRUG_MATCH_OPTIONAL: dict[str, type] = {
     "drug_target_confidence": str,
     "match_via": str,
     "match_status": str,
+    "match_list": str,
+    "target_route": str,
+    "drug_direction": str,
+    "evidence_class": str,
+    "direction_source": str,
+    "mechanism_action": str,
+    "dgidb_sources": str,
     "locus_colocalised_genes": str,
     "drug_match_rank": int,
 }
