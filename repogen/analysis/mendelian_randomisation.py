@@ -2662,9 +2662,11 @@ def _route_evidence(row, config: MRDrugMatchConfig, chembl_info: ChemblDrugInfo 
             drug_id.startswith("CHEMBL") and phase is not None and not np.isnan(phase)
             and (config.min_phase is None or phase >= config.min_phase)
         )
+        known = phase is not None and not np.isnan(phase)
         return {"evidence_class": "dgidb_target", "drug_direction": direction,
                 "direction_source": "dgidb" if direction != "none" else "none",
-                "match_list": "main", "sufficient": bool(sufficient), "off_site": False}
+                "match_list": "main", "sufficient": bool(sufficient), "off_site": False,
+                "phase": phase if known else None}
     if pd.notna(pch) and ("chembl" in source or "pdsp" in source):
         uniprot = getattr(row, "gene_uniprot_id", None)
         if config.binder_floor == "family":
@@ -2749,10 +2751,15 @@ def _build_drug_match_records(
     for row in m.itertuples(index=False):
         itype = getattr(row, "interaction_type", "other")
         confidence = getattr(row, "confidence", None)
+        max_phase = getattr(row, "max_phase", 0)
         if routed:
             ev = _route_evidence(row, config, chembl_info)
             if ev is None:
                 continue
+            # A DGIdb target claim is judged on ChEMBL's molecule record (record
+            # 044), so the row shows that phase, not the table's.
+            if ev.get("phase") is not None:
+                max_phase = ev["phase"]
             status, concordant = _route_match_status(
                 gene_result, ev["drug_direction"], ev["sufficient"], ev["off_site"],
             )
@@ -2799,7 +2806,7 @@ def _build_drug_match_records(
             "direction_concordant": concordant,
             "interaction_direction_ambiguous": not inferable,
             "pchembl_value": getattr(row, "pchembl_value", None),
-            "max_phase": getattr(row, "max_phase", 0),
+            "max_phase": max_phase,
             "atc_codes": getattr(row, "atc_codes", None),
             # --- additive provenance / ranking ---
             "action_type": getattr(row, "action_type", None),
