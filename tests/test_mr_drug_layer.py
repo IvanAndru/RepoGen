@@ -109,6 +109,14 @@ class TestDgidbClaims:
                        dgidb_sources=["GuideToPharmacology:antagonist", "PharmGKB:"])])
         assert (r["evidence_class"], r["match_list"], r["match_status"]) == ("dgidb_target", "main", "candidate")
 
+    def test_target_claim_row_shows_the_chembl_phase_it_was_judged_on(self) -> None:
+        r = _one([_row(drug_chembl_id="CHEMBL3", source="dgidb", max_phase=0,
+                       dgidb_sources=["GuideToPharmacology:inhibitor"])])
+        assert (r["match_status"], r["max_phase"]) == ("candidate", 1.0)
+        kept = _one([_row(drug_chembl_id="CHEMBL9", source="dgidb", max_phase=0,
+                          dgidb_sources=["GuideToPharmacology:inhibitor"])])
+        assert kept["max_phase"] == 0
+
     def test_list_column_from_parquet_is_read(self) -> None:
         r = _one([_row(source="dgidb", max_phase=0,
                        dgidb_sources=np.array(["ChEMBL:inhibitor"], dtype=object))])
