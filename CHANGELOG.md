@@ -39,8 +39,10 @@ All notable changes to RepoGen are recorded here. The format follows
   ChEMBL; an `antibody` claim has no direction. Binders are reported only
   above a potency floor set by target family (`drug_match.binder_floor`),
   and can be given a direction from activity data
-  (`drug_match.binder_direction_classes`, off by default). The step reads
-  the ChEMBL database and the routes file. Results change.
+  (`drug_match.binder_direction_classes`: off by default, all three classes
+  in the example config, where reading ChEMBL's activities adds about 50
+  minutes to the step). The step reads the ChEMBL database and the routes
+  file. Results change.
 - Cross-branch convergence, the export and the MR drug summary plot leave
   out Branch C's second list and `off_site` rows.
 

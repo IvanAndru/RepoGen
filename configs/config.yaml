@@ -231,6 +231,13 @@ mr:
     allow_symbol_fallback: true        # keep the flagged unambiguous-symbol tier as a last resort
     require_druggable: false           # (unchanged) annotate only; never gate on druggability
     druggable_genome_path: null        # (unchanged) no druggable-genome / Finan resource yet
+    binder_floor: "family"             # report a binder only at its target family's potency floor
+                                       #   (pChEMBL 7.5 kinases, 7 GPCRs and nuclear receptors,
+                                       #   5 ion channels, 6 others)
+    binder_direction_classes:          # give binders a direction from ChEMBL activity data;
+      - curated_activity               #   directed binders go to the second list only. Reading
+      - inferred_enzyme                #   ChEMBL's activities adds about 50 minutes to the step;
+      - inferred_kinase_binding        #   [] leaves binders undirected
 
   # MHC-region sensitivity. The MHC (chr6, extended) is a
   # long-range-LD region where cis-MR + single-variant coloc are unreliable.
