@@ -379,7 +379,10 @@ curated mechanism is a binder (`match_list: binder`), reported only at or
 above `drug_match.binder_floor`: by default pChEMBL 7.5 for kinases, 7 for
 GPCRs and nuclear receptors, 5 for ion channels and 6 otherwise.
 `drug_match.binder_direction_classes` can give binders a direction from
-ChEMBL activity data; such binders go to the second list. The step needs the
+ChEMBL activity data; such binders go to the second list. Empty by default,
+it lists all three classes in the example config (`curated_activity`,
+`inferred_enzyme`, `inferred_kinase_binding`); reading ChEMBL's activities
+for them adds about 50 minutes to the step. The step needs the
 ChEMBL database (`--chembl-sqlite`) and the curated pairs the drug table
 lacks (`drug_targets_routes.parquet`); the workflow passes both. A drug
 table written before these columns existed is judged by the earlier rule.
@@ -413,7 +416,9 @@ the most common way cis-MR produces false positives.
 
 Branch C is the slowest stage. On CREATE, a full PGC3 schizophrenia run over
 18,501 genes takes about **1.4 hours** with 4 workers (about 590 genes/min),
-peaking at 8.4 GB in the Python process. The first run also writes a
+peaking at 8.4 GB in the Python process. The example config's binder-direction
+classes add about 50 minutes for reading ChEMBL's activities, about 2.2 hours
+in all. The first run also writes a
 per-chromosome copy of the LD reference panel beside it, which takes a few
 minutes once. Raise `n_workers` (with `rule_threads` to match) if your
 scheduler will give you the cores.
