@@ -6,6 +6,15 @@ All notable changes to RepoGen are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-20
+
+Branch C's drug layer judges each drug match by its evidence and by the
+route through which the drug reaches the gene, and the drug table gains the
+columns it reads. Branch C's drug matches and verdicts change, and so do
+the exports, plots and report built on them; its gene-level results and
+Branches A and B do not. Result tables gain columns and lose none, hence a
+minor version.
+
 ### Added
 
 - The drug table, `drug_targets.parquet`, gains four columns for Branch C's
@@ -232,6 +241,7 @@ documented in `workflows/rules/common.smk`.
   which, and where to get them.
 - macOS is not supported; several external tools ship as Linux binaries only.
 
+[2.1.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v2.1.0
 [2.0.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v2.0.0
 [1.0.1]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.1
 [1.0.0]: https://github.com/IvanAndru/RepoGen/releases/tag/v1.0.0
