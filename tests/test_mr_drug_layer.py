@@ -80,6 +80,22 @@ class TestCuratedRoutes:
                        drug_name="CAPTOPRIL")], gene=_gene(gene_symbol="ACE", mr_beta=-0.56))
         assert r["match_status"] == "predicted_adverse"
 
+    def test_statins_on_the_real_hmgcr_estimate_are_candidates(self) -> None:
+        # Criterion A1: HMGCR does not reach the layer on CAD, so the status
+        # logic is checked on its real blood estimate (one instrument, +0.049):
+        # more expression, more risk, so the statins are candidates, the two
+        # whose table rows say only `other` included.
+        ids = {"gene_ensembl_id": "ENSG00000113161", "gene_symbol": "HMGCR", "gene_entrez_id": 3156,
+               "gene_uniprot_id": "P04035"}
+        hmgcr = _gene(**ids, mr_beta=0.049122, mr_pval=0.261715, pp_h4=np.nan, confidence_tier="low")
+        statins = [_row(**ids, drug_chembl_id=cid, drug_name=name, interaction_type=itype, confidence="high",
+                        target_route="single_protein", mechanism_direction="negative")
+                   for cid, name, itype in (("CHEMBL1487", "ATORVASTATIN", "other"),
+                                            ("CHEMBL1496", "ROSUVASTATIN", "other"),
+                                            ("CHEMBL1064", "SIMVASTATIN", "inhibitor"))]
+        m = _match(statins, gene=hmgcr)
+        assert len(m) == 3 and set(m["match_status"]) == {"candidate"}
+
     def test_member_routes_go_to_the_second_list(self) -> None:
         for route in ("site_member", "complex_member", "family_member"):
             r = _one([_row(target_route=route, mechanism_direction="positive")], gene=_gene(mr_beta=-0.3))
